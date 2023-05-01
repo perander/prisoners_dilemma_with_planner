@@ -1,0 +1,45 @@
+{
+    "ppo": {
+        "epochs": 2,
+        "episodes": 20000,
+        "n_steps": 300,
+        "batch_size": 64,
+        "lr": 0.0002,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "policy_clip": 0.2,
+        "ent_coef": 0.2,
+        "vf_coef": 0.5,
+        "t_learning_starts": 0,
+        "training_frequency": 256
+    },
+    "dqn": {
+        "episodes": 20000,
+        "batch_size": 32,
+        "buffer_size": 20000,
+        "lr": 0.0005,
+        "gamma": 0.99,
+        "tau": 0.005,
+        "start_e": 1,
+        "end_e": 0.05,
+        "exploration_fraction": 0.001,
+        "t_learning_starts": 1000,
+        "training_frequency": 4
+    },
+    "planner": {
+        "epochs": 2,
+        "episodes": 20000,
+        "n_steps": 300,
+        "batch_size": 64,
+        "lr": 0.0002,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "policy_clip": 0.2,
+        "ent_coef": 0.01,
+        "vf_coef": 0.5,
+        "t_learning_starts": 0,
+        "training_frequency": 256,
+        "n_actions_per_agent": 9,
+        "max_reward": 1
+    }
+}

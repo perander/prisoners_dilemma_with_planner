@@ -1,0 +1,7 @@
+cloudpickle==2.2.1
+Farama-Notifications==0.0.4
+gymnasium==0.28.1
+jax-jumpy==1.0.0
+numpy==1.24.3
+PettingZoo==1.22.3
+typing_extensions==4.5.0
