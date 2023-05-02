@@ -2,43 +2,51 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
+from memory.planner_memory import PlannerMemory
+from gymnasium.spaces.multi_discrete import MultiDiscrete
 
-from memory.ppo_memory import PPOMemory
 
-class ActorNetwork(nn.Module):
-    def __init__(self, n_actions, input_dims, lr):
-        super().__init__()
-        self.input_dims = input_dims # 1 because one agent only has one number as observation
-        self.output_dims= n_actions # 3 because there are 3 possible actions for one agent
+class PlannerActor(nn.Module):
+    def __init__(self, input_dims, n_agents, n_planner_actions, lr):
+        super(PlannerActor, self).__init__()
+
+        self.input_dims = input_dims  # 2 because planner gets both agents' actions as input
+        self.output_dims = n_planner_actions # 5 or whatever hyperparameters.json has
 
         self.actor = nn.Sequential(
-            nn.Linear(self.input_dims, 64),
+            nn.Linear(self.input_dims, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(32, self.output_dims),
-            nn.Softmax(dim=-1),
+            nn.Linear(32, self.output_dims.sum()),
+            nn.Softmax(dim=-1)
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
-    def forward(self, x):
-        dist = self.actor(x / self.output_dims)
-        dist = Categorical(dist)
+       
+    def forward(self, x):  # x is both agents' actions
+        x = self.actor(x / 2) # TODO replace hard coded normalization with max agent action (currently 2)
+
+        split_logits = torch.split(x, self.output_dims.tolist(), dim=1)
+        dist = [Categorical(logit) for logit in split_logits]
 
         return dist
 
-
-class CriticNetwork(nn.Module):
-    def __init__(self, n_actions, input_dims, lr):
-        super(CriticNetwork, self).__init__()
+class PlannerCritic(nn.Module):
+    def __init__(self, input_dims, n_agents, n_planner_actions, lr):
+        super(PlannerCritic, self).__init__()
 
         self.input_dims = input_dims
-        self.output_dims = n_actions
 
         self.critic = nn.Sequential(
-            nn.Linear(self.input_dims, 64),
+            nn.Linear(self.input_dims, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, 32),
             nn.ReLU(),
@@ -47,14 +55,17 @@ class CriticNetwork(nn.Module):
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
+       
     def forward(self, x):
-        return self.critic(x / self.output_dims)
+        return self.critic(x.to(torch.float))  # TODO normalize (now fine since there are just 2 actions ([0,1]))
+        
 
-
-class Agent:
+class Planner:
     def __init__(
         self,
-        n_actions,
+        n_actions_per_agent,
+        n_agents,
+        agent_names,
         input_dims,
         device,
         gamma=0.99,
@@ -66,10 +77,12 @@ class Agent:
         memory_size=1000000,
         ent_coef=0.01,
         vf_coef=0.5,
+        max_reward=1,
         training_frequency=256,
         t_learning_starts=0,
         anneal_lr=False
     ):
+    
         self.gamma = gamma
         self.lr = lr
         self.policy_clip = policy_clip
@@ -77,46 +90,92 @@ class Agent:
         self.gae_lambda = gae_lambda
         self.ent_coef = ent_coef
         self.vf_coef = vf_coef
-        self.n_actions = n_actions
 
         self.training_frequency = training_frequency
         self.t_learning_starts = t_learning_starts
 
-        self.actor = ActorNetwork(n_actions, input_dims, lr)
-        self.critic = CriticNetwork(n_actions, input_dims, lr)
+        self.n_agents = n_agents
+        self.agent_names = agent_names
+        self.n_actions_per_agent = n_actions_per_agent
+        
+        action_space = MultiDiscrete(np.array([n_actions_per_agent, n_actions_per_agent]))
+        self.actions = action_space.nvec
+        print("planner actions in init", self.actions)
+        
+        self.max_reward = max_reward
+        self.actions_mapped, self.actions_unmapped = self.get_actions(self.max_reward, self.n_actions_per_agent)
+
+        self.actor = PlannerActor(input_dims, n_agents, self.actions, lr)
+        self.critic = PlannerCritic(input_dims, n_agents, self.actions, lr)
+        
         self.batch_size = batch_size
         self.memory_size = memory_size
-        self.memory = PPOMemory(input_dims, self.batch_size, self.memory_size)
+        print("input dims", input_dims)
+        self.memory = PlannerMemory(input_dims, self.batch_size, self.memory_size, self.n_agents)
 
         self.device = device
         self.actor.to(self.device)
         self.critic.to(self.device)
+        self.actions_mapped = self.actions_mapped.to(self.device)
         self.anneal_lr = anneal_lr
 
-    def remember(self, i, obs, next_obs, action, reward, prob, val):
-        obs = torch.tensor([obs])
-        next_obs = torch.tensor([next_obs])
-        action = torch.tensor([action])
-        reward = torch.tensor([reward])
-        prob = torch.tensor([prob])
-        val = torch.tensor([val])
+    def get_actions(self, max_reward, n_actions):
+        """"Returns a list of n_action floats mirrored around zero with regular increments. The difference between the first and last values from the second and second to last respectively might be different than the differences between the rest.
 
-        self.memory.store_memory(i, obs, next_obs, action, reward, prob, val)
+        Args:
+            max_reward (_type_): _description_
+            n_actions (_type_): _description_
 
-    def choose_action(self, obs):
-        obs = torch.tensor(obs)
+        Returns:
+            _type_: _description_
+        """
+        inc = 2*max_reward/(n_actions - 1)
+
+        x = np.arange(inc, max_reward, inc)
+        if x[-1] != max_reward:
+            x = np.r_[x, max_reward]
+        mapped_actions = np.r_[-x[::-1], 0, x]
+        return torch.Tensor(mapped_actions), torch.Tensor([i for i in range(n_actions)])
+
+    def unmap(self, action):
+        actions_mapped = self.actions_mapped
+        actions_mapped = actions_mapped.cpu().numpy()
+        action = action.cpu().numpy()
+
+        actions_unmapped = [np.searchsorted(actions_mapped, a) for a in action]
+        return actions_unmapped
+
+
+    def remember(self, step, i, obs, next_obs, action, reward, prob, val):
+        if step > 0:
+            obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
+            next_obs = torch.tensor([next_obs[self.agent_names[0]], next_obs[self.agent_names[1]]])
+            action = torch.tensor([self.unmap(action)])
+            reward = torch.tensor([reward])
+            prob = torch.tensor([prob])
+            val = torch.tensor([val])
+
+            self.memory.store_memory(i, obs, next_obs, action, reward, prob, val)
+
+
+    def choose_action(self, planner_obs):
+        obs = torch.tensor([planner_obs[self.agent_names[0]], planner_obs[self.agent_names[1]]])
         obs = obs.unsqueeze(0)
 
-        dist = self.actor(obs)
+        obs = obs.to(self.device)
+
+        dists = self.actor(obs)
         value = self.critic(obs)
 
-        action = dist.sample()
+        action = torch.stack([dist.sample() for dist in dists])
+        probs = torch.stack([dist.log_prob(a) for a, dist in zip(action, dists)])
+        prob = probs.sum(0)
+        entropies = torch.stack([dist.entropy() for dist in dists])
+        entropy = entropies.sum(0)
+        
+        mapped_action = self.actions_mapped[action].T[0]
 
-        probs = torch.squeeze(dist.log_prob(action)).item()
-        action = torch.squeeze(action).item()
-        value = torch.squeeze(value).item()
-
-        return action, probs, dist.entropy(), value, dist.probs
+        return mapped_action, prob, entropy, value, [dist.probs for dist in dists]
 
     def compute_gae(self, rewards, values, next_values, gamma, gae_lambda):
         num_steps = len(rewards)
@@ -139,7 +198,11 @@ class Agent:
 
     def get_policy_loss(self, states, actions, old_probs, advantages, policy_clip):
         dist = self.actor(states)
-        new_probs = dist.log_prob(actions)
+
+        new_probs = torch.stack([dist.log_prob(actions[:,i]) for i, dist in enumerate(dist)])
+
+        new_probs = new_probs.sum(0)
+
         prob_ratio = (new_probs - old_probs).exp()
 
         weighted_probs = -advantages * prob_ratio
@@ -158,7 +221,6 @@ class Agent:
         critic_loss = ((returns - critic_value) ** 2).mean()
 
         return critic_loss
-    
 
     def get_annealed_lr(self, lr, step, n_steps):
         frac = 1.0 - (step - 1.0) / n_steps
@@ -166,7 +228,6 @@ class Agent:
 
         self.actor.optimizer.param_groups[0]["lr"] = new_lr
         self.critic.optimizer.param_groups[0]["lr"] = new_lr
-
 
     def learn(self, step, n_steps):
         for epoch in range(self.n_epochs):
@@ -182,8 +243,8 @@ class Agent:
             ) = self.memory.generate_batches(self.device)
 
             next_states = torch.Tensor(next_state_arr).to(self.device)
-            next_values = self.critic(next_states.unsqueeze(1))
-
+            next_values = self.critic(next_states)
+            
             advantages_arr = self.compute_gae(
                 reward_arr, vals_arr, next_values, self.gamma, self.gae_lambda
             )
@@ -194,7 +255,6 @@ class Agent:
             # For each batch, update actor and critic
             for batch in batches:
                 states = torch.Tensor(state_arr[batch]).to(self.device)
-                states = states.unsqueeze(1)
                 old_probs = torch.Tensor(old_prob_arr[batch]).to(self.device)
                 actions = torch.Tensor(action_arr[batch]).to(self.device)
                 values = torch.Tensor(vals_arr[batch]).to(self.device)
@@ -210,7 +270,8 @@ class Agent:
                 value_loss = self.get_value_loss(states, advantages, values)
 
                 dist = self.actor(states)
-                entropy = dist.entropy()
+                entropies = [d.entropy() for d in dist]
+                entropy = sum(entropies)
                 entropy_loss = entropy.mean()
 
                 total_loss = (
