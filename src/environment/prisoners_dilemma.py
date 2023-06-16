@@ -13,10 +13,10 @@ DEFECT = 1
 NONE = 2
 MOVES = ["COOPERATE", "DEFECT", "None"]
 REWARD_MAP = {
-    (COOPERATE, COOPERATE): (0.5, 0.5),
-    (COOPERATE, DEFECT): (-1, 1),
-    (DEFECT, COOPERATE): (1, -1),
-    (DEFECT, DEFECT): (-0.1, -0.1)
+    (COOPERATE, COOPERATE): (0.25, 0.25),
+    (COOPERATE, DEFECT): (-0.5, 0.5),
+    (DEFECT, COOPERATE): (0.5, -0.5),
+    (DEFECT, DEFECT): (-0.05, -0.05)
 }
 
 # dummy

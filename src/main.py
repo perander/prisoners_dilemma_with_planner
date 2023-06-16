@@ -1,19 +1,26 @@
 from environment.prisoners_dilemma import parallel_env
+from utils.utils import get_planner_actions_per_agent_actions
 from utils.agent_factory import create_agent
+import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from utils.utils import reset_planner_trajectory, get_modified_rewards
+from utils.plotting import plot_planner_q_values
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    writer = SummaryWriter("src/runs/ppo")
+    writer = SummaryWriter("src/runs/ppo_test")
 
     # hyperparameters
+    alg = 'dummy'
     alg = 'ppo'
+    planner_alg = 'q_planner'
+    planner_alg = 'ppo_planner'
     epochs = 2
-    episodes = 2000
+    episodes = 10000
     n_steps = 300
     max_cycles = 300
+    use_planner = True
 
     env = parallel_env(render_mode='ansi', max_cycles=max_cycles)
 
@@ -25,7 +32,8 @@ if __name__ == "__main__":
         for name in env.possible_agents
     ]
 
-    planner = create_agent("planner", env, device)
+    planner = create_agent(planner_alg, env, device)
+    print("planner", planner)
 
     total_steps = 0
     cum_rewards = {name: 0 for name in env.possible_agents}
@@ -36,13 +44,16 @@ if __name__ == "__main__":
     agent_dists = {name: [0, 0] for name in env.possible_agents}
     planner_dists = {name: [0 for _ in range(planner.n_actions_per_agent)] for name in env.possible_agents}
 
+    cum_planner_actions_per_agent_actions_0 = torch.zeros((2,2))
+    cum_planner_actions_per_agent_actions_1 = torch.zeros((2,2))
+    agent_action_frequencies = torch.zeros((2,2))
+
     for episode in range(episodes):
         obs = env.reset()
         planner_trajectory = reset_planner_trajectory()
         actions = {}
         probs = {}
         values = {}
-
  
         for step in range(n_steps):
             total_steps += 1
@@ -50,26 +61,27 @@ if __name__ == "__main__":
             for name, agent in agents:
                 with torch.no_grad():
                     action, prob, entropy, value, dist = agent.choose_action(obs[name])
+
                     actions[name] = action
                     probs[name] = prob
                     values[name] = value
-                    
                     agent_dists[name] = list(dist)
                     all_agent_actions[name][action] += 1
 
             planner_obs = actions
-            planner_action, planner_prob, planner_entropy, planner_value, dists = planner.choose_action(planner_obs)
-            planner
-            planner_dists[env.possible_agents[0]] = dists[0]
-            planner_dists[env.possible_agents[1]] = dists[1]
+
+            if planner_alg == "q_planner":
+                planner_action = planner.choose_action(planner_obs)
+            else:
+                planner_action, planner_prob, planner_entropy, planner_value, dists = planner.choose_action(planner_obs)
+                planner_dists[env.possible_agents[0]] = dists[0]
+                planner_dists[env.possible_agents[1]] = dists[1]
+
 
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
             # print("obs", obs, "actions", actions, "rewards", rewards, "next obs", next_obs)
 
-            modified_rewards = get_modified_rewards(rewards, planner_action, env.possible_agents)
-            # print("modified rewards", modified_rewards)
-
-            cum_rewards_planner += sum(rewards.values())
+            modified_rewards = get_modified_rewards(rewards, planner_action, env.possible_agents, use_planner)
 
             for i, (name, agent) in enumerate(agents):
                 agent.remember(
@@ -82,63 +94,96 @@ if __name__ == "__main__":
                     values[name]
                 )
 
+                if total_steps > agent.t_learning_starts and total_steps % agent.training_frequency == 0:
+                    loss = agent.learn(total_steps, n_steps)
+
+                    print(name, ": episode", episode, "step", step, "total steps", total_steps, "loss", "{0:.4f}".format(loss), "cum rewards", "{0:.4f}".format(cum_rewards[name]))
+
+                    # log loss
+                    writer.add_scalar(f"loss {name}", loss, total_steps)
+
+                # log rewards
                 cum_rewards[name] += rewards[name]
                 cum_modified_rewards[name] += modified_rewards[name]
                 cum_additional_rewards[name] += planner_action[i].item()
-            
-                if total_steps > agent.t_learning_starts and total_steps % agent.training_frequency == 0:
-                    loss = agent.learn(total_steps, n_steps)
-                    print(name, ": episode", episode, "step", step, "total steps", total_steps, "loss", "{0:.4f}".format(loss), "cum rewards", "{0:.4f}".format(cum_rewards[name]))
 
-                    writer.add_scalars(f"action probabilities {name}", {
-                        "cooperate": agent_dists[name][0],
-                        "defect": agent_dists[name][1]
-                    }, total_steps)
+                writer.add_scalars(f"cum rewards {name}", {
+                    "env": cum_rewards[name],
+                    "modified": cum_modified_rewards[name],
+                    "additional": cum_additional_rewards[name]
+                }, total_steps)
 
-    
-                    writer.add_scalars(f"action probabilities planner for {name}", {
-                        f"{i}": planner_dists[name][0][i] for i in range(planner.n_actions_per_agent)
-                    }, total_steps)
 
-                    writer.add_scalar(f"loss {name}", loss, total_steps)
-                    writer.add_scalars(f"cum rewards {name}", {
-                        "env": cum_rewards[name],
-                        "modified": cum_modified_rewards[name],
-                        "additional": cum_additional_rewards[name]
-                    }, total_steps)
-
-                    writer.add_scalars(f"action fractions {name}", {
-                        "all time 0": all_agent_actions[name][0]/sum(all_agent_actions[name]),
-                        "all time 1": all_agent_actions[name][1]/sum(all_agent_actions[name]),
-                    }, total_steps)
-            
             planner_trajectory["next_obs"] = planner_obs  # planner's last actions lead to these agent actions (planner_obs = actions)
-            planner.remember(
-                step,
-                total_steps % planner.training_frequency,
-                planner_trajectory["obs"],
-                planner_trajectory["next_obs"],
-                planner_trajectory["action"],
-                planner_trajectory["reward"],
-                planner_trajectory["prob"],
-                planner_trajectory["value"]
-            )
+
+            if planner_alg == 'ppo_planner':
+                planner.remember(
+                    step,
+                    total_steps % planner.training_frequency,
+                    planner_trajectory["obs"],
+                    planner_trajectory["next_obs"],
+                    planner_trajectory["action"],
+                    planner_trajectory["reward"],
+                    planner_trajectory["prob"],
+                    planner_trajectory["value"]
+                )
+                planner_trajectory["prob"] = planner_prob  # probs of planner's current action
+                planner_trajectory["value"] = planner_value  # value of planner's current action
 
             planner_trajectory["obs"] = planner_obs  # planner observed a set of actions
             planner_trajectory["action"] = planner_action  # planner chose additional rewards
-            planner_trajectory["reward"] = sum(rewards.values())  # planner's last actions lead to this amount of agent welfare
-            planner_trajectory["prob"] = planner_prob  # probs of planner's current action
-            planner_trajectory["value"] = planner_value  # value of planner's current action
+            planner_trajectory["reward"] = sum(rewards.values())  # planners actions lead to these rewards
 
             if total_steps > planner.t_learning_starts and total_steps % planner.training_frequency == 0:
-                planner_loss = planner.learn(total_steps, n_steps)
-                print("planner : episode", episode, "step", step, "total steps", total_steps, "loss", "{0:.4f}".format(planner_loss), "cum rewards", "{0:.4f}".format(cum_rewards_planner))
+                if planner_alg == 'ppo_planner':
+                    planner_loss = planner.learn(total_steps, n_steps)
 
-                writer.add_scalar(f"loss planner", planner_loss, total_steps)
-                writer.add_scalar("cum rewards planner", cum_rewards_planner, total_steps)
+                    print("planner : episode", episode, "step", step, "total steps", total_steps, "loss", "{0:.4f}".format(planner_loss), "cum rewards", "{0:.4f}".format(cum_rewards_planner))
+                
+                    writer.add_scalar(f"loss planner", planner_loss, total_steps)
+                
+                # planner.learn(planner_obs, planner_action, sum(rewards.values()), planner_next_obs)
+                if planner_alg == 'q_planner':
+                    planner_q_table = planner.learn(planner_trajectory["obs"], planner_trajectory["action"], planner_trajectory["reward"], planner_trajectory["next_obs"], total_steps)
 
-                    
+                    writer.add_scalar("planner epsilon", planner.epsilon, total_steps)
+            
             obs = next_obs
+
+
+            # log planner reward
+            cum_rewards_planner += planner_trajectory["reward"]
+            writer.add_scalar("cum rewards planner", cum_rewards_planner, total_steps)
+            
+            # log p(cooperate)
+            writer.add_scalars(f"p(cooperate) ", {
+                f"{env.possible_agents[0]}": agent_dists[env.possible_agents[0]][0],
+                f"{env.possible_agents[1]}": agent_dists[env.possible_agents[1]][0],
+            }, total_steps)
+
+            # log action frequencies
+            cum_planner_actions_per_agent_actions_0,cum_planner_actions_per_agent_actions_1, agent_action_frequencies, avg_planner_action_per_agent_actions_0, avg_planner_action_per_agent_actions_1, agent_action_frequencies_normalized = get_planner_actions_per_agent_actions(cum_planner_actions_per_agent_actions_0, cum_planner_actions_per_agent_actions_1, agent_action_frequencies, env.possible_agents, actions, planner_action)
+            
+            writer.add_scalars(f"avg planner rewards for agent actions 0", {
+                "c, c": avg_planner_action_per_agent_actions_0[0][0],
+                "c, d": avg_planner_action_per_agent_actions_0[0][1],
+                "d, c": avg_planner_action_per_agent_actions_0[1][0],
+                "d, d": avg_planner_action_per_agent_actions_0[1][1]
+            }, total_steps)
+
+            writer.add_scalars(f"avg planner rewards for agent actions 1", {
+                "c, c": avg_planner_action_per_agent_actions_1[0][0],
+                "c, d": avg_planner_action_per_agent_actions_1[0][1],
+                "d, c": avg_planner_action_per_agent_actions_1[1][0],
+                "d, d": avg_planner_action_per_agent_actions_1[1][1]
+            }, total_steps)
+
+            writer.add_scalars(f"agent actions frequencies", {
+                "c, c": agent_action_frequencies_normalized[0][0],
+                "c, d": agent_action_frequencies_normalized[0][1],
+                "d, c": agent_action_frequencies_normalized[1][0],
+                "d, d": agent_action_frequencies_normalized[1][1]
+            }, total_steps)
 
     env.close()
     writer.close()

@@ -95,7 +95,9 @@ class Agent:
 
     def remember(self, i, obs, next_obs, action, reward, prob, val):
         obs = torch.tensor([obs])
+        obs = obs.to(self.device)
         next_obs = torch.tensor([next_obs])
+        next_obs = next_obs.to(self.device)
         action = torch.tensor([action])
         reward = torch.tensor([reward])
         prob = torch.tensor([prob])
@@ -106,12 +108,14 @@ class Agent:
     def choose_action(self, obs):
         obs = torch.tensor(obs)
         obs = obs.unsqueeze(0)
+        obs = obs.to(self.device)
 
         dist = self.actor(obs)
         value = self.critic(obs)
 
         action = dist.sample()
 
+        # print(list(dist.probs))
         probs = torch.squeeze(dist.log_prob(action)).item()
         action = torch.squeeze(action).item()
         value = torch.squeeze(value).item()

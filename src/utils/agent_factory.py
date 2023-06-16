@@ -2,6 +2,8 @@ import json
 import numpy as np
 from model.ppo_agent import Agent as PPOAgent
 from model.ppo_planner import Planner
+from model.q_planner import QLearningPlanner
+from utils.dummy_agent import DummyAgent
 
 def create_agent(name, env, device):
     with open("hyperparameters.json", "r") as config_file:
@@ -26,8 +28,14 @@ def create_agent(name, env, device):
             t_learning_starts=params["t_learning_starts"],
             anneal_lr=params["anneal_lr"]
         )
-    elif name == "planner":
-        params = hyperparameters["planner"]
+    elif name == "dummy":
+        params = hyperparameters["dummy"]
+        return DummyAgent(
+            training_frequency=params["training_frequency"],
+            t_learning_starts=params["t_learning_starts"]
+        )
+    elif name == "ppo_planner":
+        params = hyperparameters["ppo_planner"]
         n_agents = len(env.possible_agents)
 
         return Planner(
@@ -50,6 +58,24 @@ def create_agent(name, env, device):
             t_learning_starts=params["t_learning_starts"],
             anneal_lr=params["anneal_lr"]
         )
+    elif name == "q_planner":
+        params = hyperparameters["q_planner"]
+        n_agents = len(env.possible_agents)
+        return QLearningPlanner(
+            states = params["states"],
+            actions = params["actions"],
+            lr = params["lr"],
+            gamma = params["gamma"],
+            epsilon = params["epsilon"],
+            min_epsilon = params["min_epsilon"],
+            n_actions_per_agent = params["n_actions_per_agent"],
+            max_reward = params["max_reward"],
+            n_states = params["n_states"],
+            agent_names = env.possible_agents,
+            t_learning_starts=params["t_learning_starts"],
+            training_frequency=params["training_frequency"]
+        )
+
     else:
         raise ValueError(f"Unsupported agent type: {name}")
 

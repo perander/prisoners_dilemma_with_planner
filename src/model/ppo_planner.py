@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 from memory.planner_memory import PlannerMemory
 from gymnasium.spaces.multi_discrete import MultiDiscrete
+from utils.planner_utils import get_actions, unmap
 
 
 class PlannerActor(nn.Module):
@@ -16,23 +17,34 @@ class PlannerActor(nn.Module):
         self.output_dims = n_planner_actions # 5 or whatever hyperparameters.json has
 
         self.actor = nn.Sequential(
-            nn.Linear(self.input_dims, 128),
+            nn.Linear(self.input_dims, 32),
             nn.ReLU(),
-            nn.Linear(128, 64),
+            nn.Linear(32, 16),
             nn.ReLU(),
-            nn.Linear(64, 32),
+        )
+
+        self.head_0 = nn.Sequential(
+            nn.Linear(16, 8),
             nn.ReLU(),
-            nn.Linear(32, self.output_dims.sum()),
+            nn.Linear(8, self.output_dims[0]),
+            nn.Softmax(dim=-1)
+        )
+
+        self.head_1 = nn.Sequential(
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Linear(8, self.output_dims[1]),
             nn.Softmax(dim=-1)
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
-
        
     def forward(self, x):  # x is both agents' actions
         x = self.actor(x / 2) # TODO replace hard coded normalization with max agent action (currently 2)
-
-        split_logits = torch.split(x, self.output_dims.tolist(), dim=1)
+        
+        # print(list(Categorical(x).probs))
+        # split_logits = torch.split(x, self.output_dims.tolist(), dim=1)
+        split_logits = [self.head_0(x), self.head_1(x)]
         dist = [Categorical(logit) for logit in split_logits]
 
         return dist
@@ -44,9 +56,7 @@ class PlannerCritic(nn.Module):
         self.input_dims = input_dims
 
         self.critic = nn.Sequential(
-            nn.Linear(self.input_dims, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
+            nn.Linear(self.input_dims, 64),
             nn.ReLU(),
             nn.Linear(64, 32),
             nn.ReLU(),
@@ -80,7 +90,8 @@ class Planner:
         max_reward=1,
         training_frequency=256,
         t_learning_starts=0,
-        anneal_lr=False
+        anneal_lr=False,
+        continuous=False
     ):
     
         self.gamma = gamma
@@ -103,7 +114,7 @@ class Planner:
         print("planner actions in init", self.actions)
         
         self.max_reward = max_reward
-        self.actions_mapped, self.actions_unmapped = self.get_actions(self.max_reward, self.n_actions_per_agent)
+        self.actions_mapped, self.actions_unmapped = get_actions(self.max_reward, self.n_actions_per_agent)
 
         self.actor = PlannerActor(input_dims, n_agents, self.actions, lr)
         self.critic = PlannerCritic(input_dims, n_agents, self.actions, lr)
@@ -119,38 +130,14 @@ class Planner:
         self.actions_mapped = self.actions_mapped.to(self.device)
         self.anneal_lr = anneal_lr
 
-    def get_actions(self, max_reward, n_actions):
-        """"Returns a list of n_action floats mirrored around zero with regular increments. The difference between the first and last values from the second and second to last respectively might be different than the differences between the rest.
-
-        Args:
-            max_reward (_type_): _description_
-            n_actions (_type_): _description_
-
-        Returns:
-            _type_: _description_
-        """
-        inc = 2*max_reward/(n_actions - 1)
-
-        x = np.arange(inc, max_reward, inc)
-        if x[-1] != max_reward:
-            x = np.r_[x, max_reward]
-        mapped_actions = np.r_[-x[::-1], 0, x]
-        return torch.Tensor(mapped_actions), torch.Tensor([i for i in range(n_actions)])
-
-    def unmap(self, action):
-        actions_mapped = self.actions_mapped
-        actions_mapped = actions_mapped.cpu().numpy()
-        action = action.cpu().numpy()
-
-        actions_unmapped = [np.searchsorted(actions_mapped, a) for a in action]
-        return actions_unmapped
+        self.continuous = continuous
 
 
     def remember(self, step, i, obs, next_obs, action, reward, prob, val):
         if step > 0:
             obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
             next_obs = torch.tensor([next_obs[self.agent_names[0]], next_obs[self.agent_names[1]]])
-            action = torch.tensor([self.unmap(action)])
+            action = torch.tensor([unmap(action, self.actions_mapped)])
             reward = torch.tensor([reward])
             prob = torch.tensor([prob])
             val = torch.tensor([val])
@@ -174,6 +161,7 @@ class Planner:
         entropy = entropies.sum(0)
         
         mapped_action = self.actions_mapped[action].T[0]
+        # print([list(dist.probs) for dist in dists])
 
         return mapped_action, prob, entropy, value, [dist.probs for dist in dists]
 
@@ -259,6 +247,7 @@ class Planner:
                 actions = torch.Tensor(action_arr[batch]).to(self.device)
                 values = torch.Tensor(vals_arr[batch]).to(self.device)
                 advantages = torch.Tensor(advantages_arr[batch]).to(self.device)
+                # print(values)
 
                 advantages = self.normalize_advantages(advantages)
 
@@ -295,3 +284,5 @@ class Planner:
 
         self.memory.clear_memory()
         return total_loss.item()
+
+

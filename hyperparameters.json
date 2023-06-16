@@ -3,12 +3,12 @@
         "epochs": 2,
         "episodes": 20000,
         "n_steps": 300,
-        "batch_size": 64,
-        "lr": 0.0003,
+        "batch_size":64,
+        "lr": 0.0002,
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "policy_clip": 0.2,
-        "ent_coef": 0.3,
+        "ent_coef": 0.2,
         "vf_coef": 0.5,
         "t_learning_starts": 0,
         "training_frequency": 256,
@@ -27,7 +27,7 @@
         "t_learning_starts": 1000,
         "training_frequency": 4
     },
-    "planner": {
+    "ppo_planner": {
         "epochs": 2,
         "episodes": 20000,
         "n_steps": 300,
@@ -36,12 +36,29 @@
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "policy_clip": 0.2,
-        "ent_coef": 0.01,
+        "ent_coef": 0.1,
         "vf_coef": 0.5,
         "t_learning_starts": 0,
         "training_frequency": 256,
         "n_actions_per_agent": 5,
-        "max_reward": 1,
+        "max_reward": 2,
         "anneal_lr": false
+    },
+    "q_planner": {
+        "states": 4,
+        "actions": 3,
+        "lr": 0.1,
+        "gamma": 0.999999,
+        "epsilon": 0.999,
+        "min_epsilon": 0.1,
+        "n_actions_per_agent": 5,
+        "max_reward": 2,
+        "n_states": 4,
+        "t_learning_starts": 0,
+        "training_frequency": 1
+    },
+    "dummy": {
+        "training_frequency": 1,
+        "t_learning_starts": 0
     }
 }
