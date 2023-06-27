@@ -1,3 +1,4 @@
+import sys
 from environment.prisoners_dilemma import parallel_env
 from utils.utils import get_planner_actions_per_agent_actions
 from utils.agent_factory import create_agent
@@ -11,9 +12,14 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     writer = SummaryWriter("src/runs/ppo_test")
 
+    # agent algorithm
+    try:
+        alg = sys.argv[1]
+    except IndexError:
+        raise SystemExit(f"Usage: {sys.argv[0]} <vpg/ppo/dummy>")
+    print(alg)
+
     # hyperparameters
-    alg = 'dummy'
-    alg = 'ppo'
     planner_alg = 'q_planner'
     planner_alg = 'ppo_planner'
     epochs = 2
