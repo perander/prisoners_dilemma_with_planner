@@ -1,4 +1,15 @@
 {
+    "vpg": {
+        "epochs": 2,
+        "episodes": 20000,
+        "n_steps": 300,
+        "batch_size":64,
+        "lr": 0.001,
+        "gamma": 0.99,
+        "t_learning_starts": 0,
+        "training_frequency": 8,
+        "anneal_lr": false
+    },
     "ppo": {
         "epochs": 2,
         "episodes": 20000,
@@ -32,7 +43,7 @@
         "episodes": 20000,
         "n_steps": 300,
         "batch_size": 64,
-        "lr": 0.0003,
+        "lr": 0.002,
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "policy_clip": 0.2,

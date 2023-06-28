@@ -1,5 +1,6 @@
 import json
 import numpy as np
+from model.vpg_agent import Agent as VPGAgent
 from model.ppo_agent import Agent as PPOAgent
 from model.ppo_planner import Planner
 from model.q_planner import QLearningPlanner
@@ -8,8 +9,21 @@ from utils.dummy_agent import DummyAgent
 def create_agent(name, env, device):
     with open("hyperparameters.json", "r") as config_file:
         hyperparameters = json.load(config_file)
-
-    if name == "ppo":
+    if name == "vpg":
+        params = hyperparameters["vpg"]
+        return VPGAgent(
+            n_actions=env.action_space(env.possible_agents[0]).n,
+            input_dims=1,
+            device=device,
+            gamma=params["gamma"],
+            lr=params["lr"],
+            batch_size=params["batch_size"],
+            n_epochs=params["epochs"],
+            training_frequency=params["training_frequency"],
+            t_learning_starts=params["t_learning_starts"],
+            anneal_lr=params["anneal_lr"]
+        )
+    elif name == "ppo":
         params = hyperparameters["ppo"]
         return PPOAgent(
             n_actions=env.action_space(env.possible_agents[0]).n,

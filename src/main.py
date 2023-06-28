@@ -1,4 +1,5 @@
 import sys
+import logging
 from environment.prisoners_dilemma import parallel_env
 from utils.utils import get_planner_actions_per_agent_actions
 from utils.agent_factory import create_agent
@@ -9,15 +10,18 @@ from utils.utils import reset_planner_trajectory, get_modified_rewards
 from utils.plotting import plot_planner_q_values
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    writer = SummaryWriter("src/runs/ppo_test")
-
+    logging.basicConfig(level=logging.DEBUG)
+    
     # agent algorithm
     try:
         alg = sys.argv[1]
     except IndexError:
-        raise SystemExit(f"Usage: {sys.argv[0]} <vpg/ppo/dummy>")
-    print(alg)
+        alg = "vpg"  # by default use vanilla policy gradient
+    
+    logging.debug(f"Agent algorithm: {alg}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    writer = SummaryWriter(f"src/runs/{alg}")
 
     # hyperparameters
     planner_alg = 'q_planner'
@@ -37,9 +41,11 @@ if __name__ == "__main__":
         )
         for name in env.possible_agents
     ]
-
+    
     planner = create_agent(planner_alg, env, device)
-    print("planner", planner)
+    
+    logging.debug(f"Agents: {agents}")
+    logging.debug(f"Planner: {planner}")
 
     total_steps = 0
     cum_rewards = {name: 0 for name in env.possible_agents}
@@ -85,7 +91,7 @@ if __name__ == "__main__":
 
 
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
-            # print("obs", obs, "actions", actions, "rewards", rewards, "next obs", next_obs)
+            logging.debug(f"obs {obs},\t actions {actions},\t rewards {rewards},\t next obs {next_obs}")
 
             modified_rewards = get_modified_rewards(rewards, planner_action, env.possible_agents, use_planner)
 
@@ -95,6 +101,7 @@ if __name__ == "__main__":
                     obs[name],
                     next_obs[name],
                     actions[name],
+                    # rewards[name],  # debugging
                     modified_rewards[name],
                     probs[name],
                     values[name]
@@ -103,9 +110,8 @@ if __name__ == "__main__":
                 if total_steps > agent.t_learning_starts and total_steps % agent.training_frequency == 0:
                     loss = agent.learn(total_steps, n_steps)
 
-                    print(name, ": episode", episode, "step", step, "total steps", total_steps, "loss", "{0:.4f}".format(loss), "cum rewards", "{0:.4f}".format(cum_rewards[name]))
+                    logging.info(f"{name}: episode {episode}, step {step}, total_steps {total_steps}, loss {'{0:.4f}'.format(loss)}, cum rewards, {'{0:.4f}'.format(cum_rewards[name])}")
 
-                    # log loss
                     writer.add_scalar(f"loss {name}", loss, total_steps)
 
                 # log rewards
@@ -118,7 +124,6 @@ if __name__ == "__main__":
                     "modified": cum_modified_rewards[name],
                     "additional": cum_additional_rewards[name]
                 }, total_steps)
-
 
             planner_trajectory["next_obs"] = planner_obs  # planner's last actions lead to these agent actions (planner_obs = actions)
 
@@ -139,23 +144,22 @@ if __name__ == "__main__":
             planner_trajectory["obs"] = planner_obs  # planner observed a set of actions
             planner_trajectory["action"] = planner_action  # planner chose additional rewards
             planner_trajectory["reward"] = sum(rewards.values())  # planners actions lead to these rewards
+            # planner_trajectory["reward"] = sum(planner_action)  # debugging
 
             if total_steps > planner.t_learning_starts and total_steps % planner.training_frequency == 0:
                 if planner_alg == 'ppo_planner':
                     planner_loss = planner.learn(total_steps, n_steps)
 
-                    print("planner : episode", episode, "step", step, "total steps", total_steps, "loss", "{0:.4f}".format(planner_loss), "cum rewards", "{0:.4f}".format(cum_rewards_planner))
-                
+                    logging.info(f"planner: episode {episode}, step {step}, total steps {total_steps}, loss {'{0:.4f}'.format(loss)}, cum rewards, {'{0:.4f}'.format(cum_rewards_planner)}")
+
                     writer.add_scalar(f"loss planner", planner_loss, total_steps)
                 
-                # planner.learn(planner_obs, planner_action, sum(rewards.values()), planner_next_obs)
                 if planner_alg == 'q_planner':
                     planner_q_table = planner.learn(planner_trajectory["obs"], planner_trajectory["action"], planner_trajectory["reward"], planner_trajectory["next_obs"], total_steps)
 
                     writer.add_scalar("planner epsilon", planner.epsilon, total_steps)
             
             obs = next_obs
-
 
             # log planner reward
             cum_rewards_planner += planner_trajectory["reward"]
