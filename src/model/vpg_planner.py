@@ -90,7 +90,7 @@ class Planner:
         return mapped_action, prob, entropy, value, [dist.probs for dist in dists]
     
     def compute_advantage(self, rewards):
-        print("rewards", rewards, len(rewards))
+        # print("rewards", rewards, len(rewards))
         advantages = []
 
         for i in range(len(rewards)):
@@ -103,12 +103,12 @@ class Planner:
             advantages.append(new_g)
         
         advantages = torch.tensor(advantages).to(self.device)
-        print(advantages)
+        # print(advantages)
         # print("normalized", advantages / torch.max(torch.abs(advantages)))
+        advantages = advantages / torch.max(torch.abs(advantages))
         return advantages
 
-        return sum(rewards) # placeholder
-    
+
     def learn(self, step, n_steps):
         for epoch in range(self.n_epochs):
             (
@@ -123,26 +123,25 @@ class Planner:
             ) = self.memory.generate_batches(self.device)
 
             states = torch.Tensor(state_arr).to(self.device)
-            print("states", states)
+            # print("states", states)
             next_states = torch.Tensor(next_state_arr).to(self.device)
             next_values = self.critic(next_states)
             actions = torch.Tensor(action_arr).to(self.device)
 
             advantages_arr = self.compute_advantage(reward_arr)
-            print(advantages_arr)
+            # print(advantages_arr)
 
-            print("actions", actions)
+            # print("actions", actions)
             dists = self.actor(states)
-            print("dists", [d.probs for d in dists])
+            # print("dists", [d.probs for d in dists])
 
-            # TODO there are two actions, so two sets of probs. How should the log pi(a|s) look like then? p(action pair) = p(action1) * p(action2)
-            probs_per_action = dists.probs.gather(dim=1, index=actions.long().view(-1,1)).squeeze()
+            dist_probs = [d.probs for d in dists]
 
-            print(probs_per_action)
-            print("advantages", advantages_arr)
+            probs_per_action = [dist_probs[i].gather(dim=1, index=actions.long()[:,i].view(-1,1)).squeeze() for i in range(self.n_agents)]
 
-            loss = -torch.sum(torch.log(probs_per_action) * advantages_arr)
-            print("loss", loss)
+            probs_per_action_pair = torch.mul(*probs_per_action)
+
+            loss = -torch.sum(torch.log(probs_per_action_pair) * advantages_arr)
 
             self.actor.optimizer.zero_grad()
             self.critic.optimizer.zero_grad()
