@@ -4,6 +4,7 @@ from model.vpg_agent import Agent as VPGAgent
 from model.ppo_agent import Agent as PPOAgent
 from model.ppo_planner import Planner
 from model.q_planner import QLearningPlanner
+from model.vpg_planner import Planner as VPGPlanner
 from utils.dummy_agent import DummyAgent
 
 def create_agent(name, env, device):
@@ -44,9 +45,30 @@ def create_agent(name, env, device):
         )
     elif name == "dummy":
         params = hyperparameters["dummy"]
+        
         return DummyAgent(
             training_frequency=params["training_frequency"],
             t_learning_starts=params["t_learning_starts"]
+        )
+    elif name == "vpg_planner":
+        params = hyperparameters["vpg_planner"]
+        n_agents = len(env.possible_agents)
+
+        return VPGPlanner(
+            n_actions_per_agent=params["n_actions_per_agent"],
+            n_agents=n_agents,
+            agent_names=env.possible_agents,
+            max_reward=params["max_reward"],
+            input_dims=n_agents,
+            device=device,
+            gamma=params["gamma"],
+            lr=params["lr"],
+            batch_size=params["batch_size"],
+            n_epochs=params["epochs"],
+            memory_size=params["training_frequency"],
+            training_frequency=params["training_frequency"],
+            t_learning_starts=params["t_learning_starts"],
+            anneal_lr=params["anneal_lr"]
         )
     elif name == "ppo_planner":
         params = hyperparameters["ppo_planner"]

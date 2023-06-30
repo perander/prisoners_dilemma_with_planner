@@ -38,6 +38,17 @@
         "t_learning_starts": 1000,
         "training_frequency": 4
     },
+    "vpg_planner": {
+        "epochs": 2,
+        "batch_size": 64,
+        "lr": 0.002,
+        "gamma": 0.99,
+        "t_learning_starts": 0,
+        "training_frequency": 8,
+        "n_actions_per_agent": 5,
+        "max_reward": 2,
+        "anneal_lr": false
+    },
     "ppo_planner": {
         "epochs": 2,
         "episodes": 20000,

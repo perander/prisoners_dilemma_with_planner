@@ -10,11 +10,11 @@ from utils.utils import reset_planner_trajectory, get_modified_rewards
 from utils.plotting import plot_planner_q_values
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     
     # agent algorithm
     try:
-        alg = sys.argv[1]
+        alg = sys.argv[1]  # ppo/vpg/dummy
     except IndexError:
         alg = "vpg"  # by default use vanilla policy gradient
     
@@ -24,8 +24,9 @@ if __name__ == "__main__":
     writer = SummaryWriter(f"src/runs/{alg}")
 
     # hyperparameters
-    planner_alg = 'q_planner'
-    planner_alg = 'ppo_planner'
+    # planner_alg = 'q_planner'
+    # planner_alg = 'ppo_planner'
+    planner_alg = 'vpg_planner'
     epochs = 2
     episodes = 10000
     n_steps = 300
@@ -127,7 +128,7 @@ if __name__ == "__main__":
 
             planner_trajectory["next_obs"] = planner_obs  # planner's last actions lead to these agent actions (planner_obs = actions)
 
-            if planner_alg == 'ppo_planner':
+            if planner_alg == 'ppo_planner' or planner_alg == 'vpg_planner':
                 planner.remember(
                     step,
                     total_steps % planner.training_frequency,
@@ -147,7 +148,7 @@ if __name__ == "__main__":
             # planner_trajectory["reward"] = sum(planner_action)  # debugging
 
             if total_steps > planner.t_learning_starts and total_steps % planner.training_frequency == 0:
-                if planner_alg == 'ppo_planner':
+                if planner_alg == 'ppo_planner' or planner_alg == 'vpg_planner':
                     planner_loss = planner.learn(total_steps, n_steps)
 
                     logging.info(f"planner: episode {episode}, step {step}, total steps {total_steps}, loss {'{0:.4f}'.format(loss)}, cum rewards, {'{0:.4f}'.format(cum_rewards_planner)}")
