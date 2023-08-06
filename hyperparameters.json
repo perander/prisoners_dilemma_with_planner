@@ -1,14 +1,12 @@
 {
     "vpg": {
         "epochs": 2,
-        "episodes": 20000,
-        "n_steps": 300,
-        "batch_size":64,
-        "lr": 0.001,
+        "lr": 0.01,
         "gamma": 0.99,
         "t_learning_starts": 0,
-        "training_frequency": 8,
-        "anneal_lr": false
+        "training_frequency": 2,
+        "anneal_lr": false,
+        "clip": 5
     },
     "ppo": {
         "epochs": 2,
@@ -29,7 +27,7 @@
         "episodes": 20000,
         "batch_size": 32,
         "buffer_size": 20000,
-        "lr": 0.0005,
+        "lr": 0.0001,
         "gamma": 0.99,
         "tau": 0.005,
         "start_e": 1,
@@ -40,14 +38,13 @@
     },
     "vpg_planner": {
         "epochs": 2,
-        "batch_size": 64,
-        "lr": 0.002,
+        "lr": 0.1,
         "gamma": 0.99,
         "t_learning_starts": 0,
-        "training_frequency": 8,
-        "n_actions_per_agent": 5,
-        "max_reward": 2,
-        "anneal_lr": false
+        "training_frequency": 2,
+        "max_reward": 5,
+        "anneal_lr": false,
+        "clip": 5
     },
     "ppo_planner": {
         "epochs": 2,

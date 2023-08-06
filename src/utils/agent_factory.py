@@ -18,11 +18,11 @@ def create_agent(name, env, device):
             device=device,
             gamma=params["gamma"],
             lr=params["lr"],
-            batch_size=params["batch_size"],
             n_epochs=params["epochs"],
             training_frequency=params["training_frequency"],
             t_learning_starts=params["t_learning_starts"],
-            anneal_lr=params["anneal_lr"]
+            anneal_lr=params["anneal_lr"],
+            clip=params["clip"]
         )
     elif name == "ppo":
         params = hyperparameters["ppo"]
@@ -55,7 +55,6 @@ def create_agent(name, env, device):
         n_agents = len(env.possible_agents)
 
         return VPGPlanner(
-            n_actions_per_agent=params["n_actions_per_agent"],
             n_agents=n_agents,
             agent_names=env.possible_agents,
             max_reward=params["max_reward"],
@@ -63,12 +62,11 @@ def create_agent(name, env, device):
             device=device,
             gamma=params["gamma"],
             lr=params["lr"],
-            batch_size=params["batch_size"],
             n_epochs=params["epochs"],
-            memory_size=params["training_frequency"],
             training_frequency=params["training_frequency"],
             t_learning_starts=params["t_learning_starts"],
-            anneal_lr=params["anneal_lr"]
+            anneal_lr=params["anneal_lr"],
+            clip=params["clip"]
         )
     elif name == "ppo_planner":
         params = hyperparameters["ppo_planner"]

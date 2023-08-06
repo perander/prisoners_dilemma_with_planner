@@ -1,6 +1,7 @@
 import torch
 
 def get_modified_rewards(rewards, planner_actions, agent_names, use_planner):
+    # print("planner actions", planner_actions)
     if use_planner:
         modified_rewards = {
             agent_names[0]: rewards[agent_names[0]] + planner_actions[0],
@@ -20,10 +21,74 @@ def reset_planner_trajectory():
     planner_trajectory["reward"] = None
     planner_trajectory["prob"] = None
     planner_trajectory["value"] = None
+    planner_trajectory["agent_state"] = None
 
     return planner_trajectory
 
-def get_planner_actions_per_agent_actions(a, b, agent_action_frequencies, agent_names, actions, planner_action):
+
+def get_planner_action_per_agent_actions(planner_alg, planner):
+    device = planner.device
+    cc = torch.tensor([[0,0]]).to(device)
+    cd = torch.tensor([[0,1]]).to(device)
+    dc = torch.tensor([[1,0]]).to(device)
+    dd = torch.tensor([[1,1]]).to(device)
+
+    actions = []
+
+    for action_pair in [cc, cd, dc, dd]:
+        if planner_alg == 'vpg_planner':
+            action = planner.actor(action_pair)
+            actions.append(action.squeeze(0))
+        elif planner_alg == 'ppo_planner':
+            dists = planner.actor(action_pair)
+            action = torch.stack([dist.sample() for dist in dists])
+            # print(f"planner dists for {action_pair}: {[dist.probs for dist in dists]}")
+            mapped_action = planner.actions_mapped[action].T[0]
+            actions.append(mapped_action)
+    
+    actions = torch.stack(actions)
+    return actions[:,0], actions[:,1]
+
+
+
+# def get_planner_action_per_agent_actions(actor, device):
+#     cc = torch.tensor([[0,0]]).to(device)
+#     cd = torch.tensor([[0,1]]).to(device)
+#     dc = torch.tensor([[1,0]]).to(device)
+#     dd = torch.tensor([[1,1]]).to(device)
+
+#     actions = []
+
+#     for action_pair in [cc, cd, dc, dd]:
+#         action = actor(action_pair)
+#         actions.append(action.squeeze(0))
+
+#     actions = torch.stack(actions)
+#     return actions[:,0], actions[:,1]
+
+
+# def get_planner_action_per_agent_actions_sampled(actor, actions_mapped, device):
+#     cc = torch.tensor([[0,0]]).to(device)
+#     cd = torch.tensor([[0,1]]).to(device)
+#     dc = torch.tensor([[1,0]]).to(device)
+#     dd = torch.tensor([[1,1]]).to(device)
+
+#     actions = []
+
+#     for action_pair in [cc, cd, dc, dd]:
+#         dists = actor(action_pair)
+#         action = torch.stack([dist.sample() for dist in dists])
+#         # print(f"planner dists for {action_pair}: {[dist.probs for dist in dists]}")
+#         mapped_action = actions_mapped[action].T[0]
+#         actions.append(mapped_action)
+#     print()
+
+#     actions = torch.stack(actions)
+#     return actions[:,0], actions[:,1]
+
+
+
+def get_planner_actions_per_agent_actions_historical(a, b, agent_action_frequencies, agent_names, actions, planner_action):
     """
 
     Args:

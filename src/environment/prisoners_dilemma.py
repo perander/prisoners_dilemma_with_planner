@@ -19,7 +19,16 @@ REWARD_MAP = {
     (DEFECT, DEFECT): (-0.05, -0.05)
 }
 
-# dummy
+
+# dummies
+# reverse (default cc, optimum dd)
+# REWARD_MAP = {
+#     (DEFECT, DEFECT): (0.25, 0.25),
+#     (DEFECT, COOPERATE): (-0.5, 0.5),
+#     (COOPERATE, DEFECT): (0.5, -0.5),
+#     (COOPERATE, COOPERATE): (-0.05, -0.05)
+# }
+# equilibrium C,D
 # REWARD_MAP = {
 #     (COOPERATE, COOPERATE): (1, -1),
 #     (COOPERATE, DEFECT): (1, 1),
@@ -27,6 +36,21 @@ REWARD_MAP = {
 #     (DEFECT, DEFECT): (-1, 1)
 # }
 
+# equilibrium C,C 
+# REWARD_MAP = {
+#     (COOPERATE, COOPERATE): (1, 1),
+#     (COOPERATE, DEFECT): (1, -1),
+#     (DEFECT, COOPERATE): (-1, 1),
+#     (DEFECT, DEFECT): (-1, -1)
+# }
+
+# pd baumann original rewards (always >= 0)
+# REWARD_MAP = {
+#     (COOPERATE, COOPERATE): (3, 3),
+#     (COOPERATE, DEFECT): (4, 1),
+#     (DEFECT, COOPERATE): (1, 4),
+#     (DEFECT, DEFECT): (0, 0)
+# }
 
 def env(render_mode=None):
     """
@@ -128,7 +152,8 @@ class parallel_env(ParallelEnv):
         """
         self.agents = self.possible_agents[:]
         self.num_moves = 0
-        observations = {agent: NONE for agent in self.agents}
+        # observations = {agent: NONE for agent in self.agents}
+        observations = {agent: 0 for agent in self.agents}
 
         return observations
 
@@ -142,6 +167,7 @@ class parallel_env(ParallelEnv):
         - infos
         dicts where each dict looks like {agent_1: item_1, agent_2: item_2}
         """
+        # print("actions", actions, self.agents)
         self.state = actions
         # If a user passes in actions with no agents, then just return empty observations, etc.
         if not actions:
@@ -157,12 +183,19 @@ class parallel_env(ParallelEnv):
         terminations = {agent: False for agent in self.agents}
 
         self.num_moves += 1
+        # print(f"in step: num_moves {self.num_moves}, max_cycles {self.max_cycles}")
         env_truncation = self.num_moves >= self.max_cycles
         truncations = {agent: env_truncation for agent in self.agents}
 
         # current observation is just the other player's most recent action
+        # observations = {
+        #     self.agents[i]: int(actions[self.agents[1 - i]])
+        #     for i in range(len(self.agents))
+        # }
+
+        # observation which does not offer context
         observations = {
-            self.agents[i]: int(actions[self.agents[1 - i]])
+            self.agents[i]: 0
             for i in range(len(self.agents))
         }
 
@@ -171,6 +204,7 @@ class parallel_env(ParallelEnv):
         infos = {agent: {} for agent in self.agents}
 
         if env_truncation:
+            print("truncation")
             self.agents = []
 
         if self.render_mode == "human":

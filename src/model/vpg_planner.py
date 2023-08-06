@@ -1,29 +1,42 @@
-import numpy as np
 import torch
-import logging
-from model.ppo_planner import PlannerActor, PlannerCritic
+import torch.nn as nn
+import torch.optim as optim
+from model.ppo_planner import PlannerCritic
 from memory.planner_memory import PlannerMemory
-from gymnasium.spaces.multi_discrete import MultiDiscrete
-from utils.planner_utils import get_actions, unmap
+
+class VPGActor(nn.Module):
+    def __init__(self, input_dims, n_agents, lr):
+        super(VPGActor, self).__init__()
+
+        self.input_dims = input_dims
+        self.output_dims = n_agents
+
+        self.actor = nn.Sequential(
+            nn.Linear(self.input_dims, self.output_dims),
+            nn.Sigmoid()
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
+
+    def forward(self, x):
+        return self.actor(x.float())
+
 
 class Planner:
     def __init__(
         self,
-        n_actions_per_agent,
         n_agents,
         agent_names,
         max_reward,
-        # n_actions,
         input_dims,
         device,
         gamma=0.99,
         lr=0.0003,
-        batch_size=64,
         n_epochs=10,
-        memory_size=1000000,
         training_frequency=256,
         t_learning_starts=0,
         anneal_lr=False,
+        clip=5
     ):
         self.input_dims = input_dims
         self.device = device
@@ -31,66 +44,45 @@ class Planner:
         self.gamma = gamma
         self.lr = lr
         self.n_epochs = n_epochs
-        self.batch_size = batch_size
         self.memory_size = training_frequency
         self.training_frequency = training_frequency
         self.t_learning_starts = t_learning_starts
 
-        # self.n_actions = n_actions
         self.n_agents = n_agents
         self.agent_names = agent_names
-        self.n_actions_per_agent = n_actions_per_agent
-
-        action_space = MultiDiscrete(np.array([n_actions_per_agent, n_actions_per_agent]))
-        self.actions = action_space.nvec
-        logging.debug(f"planner actions in init: {self.actions}")
 
         self.max_reward = max_reward
-        self.actions_mapped, self.actions_unmapped = get_actions(self.max_reward, self.n_actions_per_agent)
 
-        self.actor = PlannerActor(input_dims, n_agents, self.actions, lr)
-        self.critic = PlannerCritic(input_dims, n_agents, self.actions, lr)
+        self.actor = VPGActor(input_dims, n_agents, lr)
+        self.critic = PlannerCritic(input_dims, n_agents, lr)
 
-        self.memory = PlannerMemory(input_dims, self.batch_size, self.memory_size, self.n_agents)
+        self.memory = PlannerMemory(input_dims, self.memory_size, self.n_agents)
 
         self.actor.to(self.device)
         self.critic.to(self.device)
-        self.actions_mapped.to(self.device)
+
+        self.clip = clip
+
+    def remember(self, step, i, action, obs, next_obs, reward, agent_state, meta):
+        obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
+        reward = torch.tensor([reward[self.agent_names[0]], reward[self.agent_names[1]]])
+        agent_state = torch.tensor([agent_state[self.agent_names[0]], agent_state[self.agent_names[1]]])
+
+        self.memory.store_memory(i, obs, action, reward, agent_state)
 
     
-    def remember(self, step, i, obs, next_obs, action, reward, prob, val):
-        if step > 0:
-            obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
-            next_obs = torch.tensor([next_obs[self.agent_names[0]], next_obs[self.agent_names[1]]])
-            action = torch.tensor([unmap(action, self.actions_mapped)])
-            reward = torch.tensor([reward])
-            prob = torch.tensor([prob])
-            val = torch.tensor([val])
-
-            self.memory.store_memory(i, obs, next_obs, action, reward, prob, val)
-
     def choose_action(self, planner_obs):
         obs = torch.tensor([planner_obs[self.agent_names[0]], planner_obs[self.agent_names[1]]])
-        obs = obs.unsqueeze(0)
 
         obs = obs.to(self.device)
 
-        dists = self.actor(obs)
+        actions = self.actor(obs)
         value = self.critic(obs)
 
-        action = torch.stack([dist.sample() for dist in dists])
-        probs = torch.stack([dist.log_prob(a) for a, dist in zip(action, dists)])
-        prob = probs.sum(0)
-        entropies = torch.stack([dist.entropy() for dist in dists])
-        entropy = entropies.sum(0)
-        
-        mapped_action = self.actions_mapped[action].T[0]
-        # print([list(dist.probs) for dist in dists])
+        return self.max_reward * actions.squeeze(0), value
 
-        return mapped_action, prob, entropy, value, [dist.probs for dist in dists]
-    
     def compute_advantage(self, rewards):
-        # print("rewards", rewards, len(rewards))
+        # not really advantage but just a sum of rewards, TODO rename
         advantages = []
 
         for i in range(len(rewards)):
@@ -103,50 +95,82 @@ class Planner:
             advantages.append(new_g)
         
         advantages = torch.tensor(advantages).to(self.device)
-        # print(advantages)
-        # print("normalized", advantages / torch.max(torch.abs(advantages)))
         advantages = advantages / torch.max(torch.abs(advantages))
         return advantages
 
+    def get_policy_loss(self, states, actions, rewards):
+        rewards = [torch.add(*individual_rewards) for individual_rewards in rewards]
 
-    def learn(self, step, n_steps):
+        advantages = self.compute_advantage(rewards)
+
+        dists = self.actor(states)
+
+        dist_probs = [d.probs for d in dists]
+
+        probs_per_action = [dist_probs[i].gather(dim=1, index=actions.long()[:,i].view(-1,1)).squeeze() for i in range(self.n_agents)]
+
+        pi_p = torch.mul(*probs_per_action)
+
+        return -torch.sum(torch.log(pi_p) * advantages)
+
+    
+    def get_policy_loss_predictive(self, states, actions, rewards, agent_lrs, agents, agent_state):
+        agent_0 = agents[0][1]
+        agent_1 = agents[1][1]
+
+        total_loss = 0
+
+        for i, agent in enumerate([agent_0, agent_1]):
+            # calculate agent g_log_pi
+            dists, _ = agent.actor(agent_state[:,i].unsqueeze(1))
+            agent_actions = states[:,i].unsqueeze(1)
+
+            pi = dists.probs.gather(dim=1, index=agent_actions.long().view(-1,1)).squeeze()
+
+            log_pi = torch.log(pi)
+
+            agent.actor.optimizer.zero_grad()
+            log_pi[0].backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), self.clip)
+            g_log_pi = [param.grad.detach() for _, param in agent.actor.named_parameters()][0]
+
+            # treat the rewards as they are (do not calculate advantages? do not even sum?)
+            actions = self.actor(states)
+            g_Vp = g_log_pi * actions[0][i]
+
+            g_V = g_log_pi * torch.sum(rewards[0])
+            
+            # loss per agent
+            loss = -agent_lrs[i] * g_Vp * g_V
+
+            total_loss += loss
+            # print(f"loss for agent {i}", loss, "total loss", total_loss)
+
+        return total_loss
+
+
+    def learn(self, step, n_steps, agent_1_lr, agent_2_lr, agents):
         for epoch in range(self.n_epochs):
             (
                 state_arr,
-                next_state_arr,
                 action_arr,
-                old_prob_arr,
-                vals_arr,
                 reward_arr,
-                # dones_arr, TODO add
-                batches,
-            ) = self.memory.generate_batches(self.device)
+                agent_state,
+            ) = self.memory.generate_batches()
 
             states = torch.Tensor(state_arr).to(self.device)
-            # print("states", states)
-            next_states = torch.Tensor(next_state_arr).to(self.device)
-            next_values = self.critic(next_states)
+            agent_state = torch.Tensor(agent_state).to(self.device)
             actions = torch.Tensor(action_arr).to(self.device)
 
-            advantages_arr = self.compute_advantage(reward_arr)
-            # print(advantages_arr)
-
-            # print("actions", actions)
-            dists = self.actor(states)
-            # print("dists", [d.probs for d in dists])
-
-            dist_probs = [d.probs for d in dists]
-
-            probs_per_action = [dist_probs[i].gather(dim=1, index=actions.long()[:,i].view(-1,1)).squeeze() for i in range(self.n_agents)]
-
-            probs_per_action_pair = torch.mul(*probs_per_action)
-
-            loss = -torch.sum(torch.log(probs_per_action_pair) * advantages_arr)
+            loss = self.get_policy_loss_predictive(states, actions, reward_arr, [agent_1_lr, agent_2_lr], agents, agent_state)
 
             self.actor.optimizer.zero_grad()
             self.critic.optimizer.zero_grad()
 
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.clip)
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.clip)
 
             self.actor.optimizer.step()
             self.critic.optimizer.step()

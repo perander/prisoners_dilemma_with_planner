@@ -1,31 +1,38 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
 from torch.distributions import Categorical
 from memory.vpg_memory import VPGMemory
 
-class Actor(nn.Module):
-    def __init__(self, n_actions, input_dims, lr):
+
+class Actor(torch.nn.Module):
+    # logistic regression with just one parameter
+    def __init__(self, lr):
         super().__init__()
-        self.input_dims = input_dims
-        self.output_dims = n_actions
-
-        self.actor = nn.Sequential(
-            nn.Linear(self.input_dims, 8),
-            nn.ReLU(),
-            nn.Linear(8, self.output_dims),
-            nn.Softmax(dim=-1)
-        )
-
+        self.theta = nn.Parameter(torch.randn(1))
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
-    
+
+        
     def forward(self, x):
-        dist = self.actor(x / self.output_dims)
+        # replace 0s (because sigmoid(self.theta * 0) = 0 always)
+        x = x.detach().clone()
+        x[x == 0] = -1
+
+        if torch.isnan(self.theta):
+            self.theta = nn.Parameter(torch.randn(1))
+        
+        p_cooperate = torch.sigmoid(self.theta * x)
+
+        if x.shape[0] == 1:
+            # dist = torch.tensor([p_cooperate, 1-p_cooperate], requires_grad=True).view(-1,1)
+            dist = torch.cat((p_cooperate, 1-p_cooperate), 0)
+            # print("dist in forward", dist)
+        else:
+            dist = torch.cat((p_cooperate, 1-p_cooperate), 1)
+        
         dist = Categorical(dist)
 
-        return dist
+        return dist, self.theta
     
 class Critic(nn.Module):
     def __init__(self, n_actions, input_dims, lr):
@@ -54,12 +61,11 @@ class Agent:
         device,
         gamma=0.99,
         lr=0.0003,
-        batch_size=64,
         n_epochs=10,
-        memory_size=1000000,
         training_frequency=256,
         t_learning_starts=0,
-        anneal_lr=False
+        anneal_lr=False,
+        clip = 5
     ):
         self.n_actions = n_actions
         self.input_dims = input_dims
@@ -68,32 +74,35 @@ class Agent:
         self.gamma = gamma
         self.lr = lr
         self.n_epochs = n_epochs
-        self.batch_size = batch_size
         self.memory_size = training_frequency
         self.training_frequency = training_frequency
         self.t_learning_starts = t_learning_starts
         
-        self.memory = VPGMemory(self.input_dims, self.batch_size, self.memory_size)
+        self.memory = VPGMemory(self.memory_size)
         
-        self.actor = Actor(n_actions=self.n_actions, input_dims=self.input_dims, lr=self.lr)
+        self.actor = Actor(self.lr)
         self.critic = Critic(n_actions=self.n_actions, input_dims=self.input_dims, lr=self.lr)
 
+        self.actor.to(self.device)
+        self.critic.to(self.device)
+
+        self.clip = clip
+
+
+    def reset(self):     
+        self.actor = Actor(self.lr)
+        self.critic = Critic(n_actions=self.n_actions, input_dims=self.input_dims, lr=self.lr)
 
         self.actor.to(self.device)
         self.critic.to(self.device)
 
 
-    def remember(self, i, obs, next_obs, action, reward, prob, val):
-        obs = torch.tensor([obs])
-        obs = obs.to(self.device)
-        next_obs = torch.tensor([next_obs])
-        next_obs = next_obs.to(self.device)
+    def remember(self, i, obs, action, reward):
+        obs = torch.tensor([obs]).to(self.device)
         action = torch.tensor([action])
         reward = torch.tensor([reward])
-        prob = torch.tensor([prob])
-        val = torch.tensor([val])
 
-        self.memory.store_memory(i, obs, next_obs, action, reward, prob, val)
+        self.memory.store_memory(i, obs, action, reward)
 
 
     def choose_action(self, obs):
@@ -101,7 +110,7 @@ class Agent:
         obs = obs.unsqueeze(0)
         obs = obs.to(self.device)
 
-        dist = self.actor(obs)
+        dist, theta = self.actor(obs)
         value = self.critic(obs)
 
         action = dist.sample()
@@ -110,10 +119,9 @@ class Agent:
         action = torch.squeeze(action).item()
         value = torch.squeeze(value).item()
         
-        return action, probs, None, value, dist.probs
+        return action, probs, None, value, dist.probs, theta
 
     def compute_advantage(self, rewards):
-        print("rewards", rewards, len(rewards))
         advantages = []
 
         for i in range(len(rewards)):
@@ -126,52 +134,43 @@ class Agent:
             advantages.append(new_g)
         
         advantages = torch.tensor(advantages).to(self.device)
-        print(advantages)
         # print("normalized", advantages / torch.max(torch.abs(advantages)))
+        advantages = advantages / torch.max(torch.abs(advantages))
         return advantages
 
-        return sum(rewards) # placeholder
+    def get_policy_loss(self, states, actions, rewards):
+        advantages = self.compute_advantage(rewards)
 
-    def get_policy_loss(self):
-        pass
+        dists, _ = self.actor(states)
+
+        if actions.shape[0] > 1:
+            probs_per_action = dists.probs.gather(dim=1, index=actions.long().view(-1,1)).squeeze()
+        else:
+            probs_per_action = dists.probs.gather(dim=0, index=actions.unsqueeze(0).long()).squeeze()
+
+        return -torch.sum(torch.log(probs_per_action) * advantages)
+
 
     def learn(self, step, n_steps):
         for epoch in range(self.n_epochs):
             (
                 state_arr,
-                next_state_arr,
                 action_arr,
-                old_prob_arr,
-                vals_arr,
                 reward_arr,
-                # dones_arr, TODO add
-                batches,
-            ) = self.memory.generate_batches(self.device)
+            ) = self.memory.generate_batches()
 
             states = torch.Tensor(state_arr).unsqueeze(1).to(self.device)
-            next_states = torch.Tensor(next_state_arr).unsqueeze(1).to(self.device)
-            next_values = self.critic(next_states)
             actions = torch.Tensor(action_arr).to(self.device)
 
-            advantages_arr = self.compute_advantage(reward_arr)
-            print(advantages_arr)
-
-            print("actions", actions)
-            dists = self.actor(states)
-            print("dists", dists.probs)
-
-            probs_per_action = dists.probs.gather(dim=1, index=actions.long().view(-1,1)).squeeze()
-
-            print(probs_per_action)
-            print("advantages", advantages_arr)
-
-            loss = -torch.sum(torch.log(probs_per_action) * advantages_arr)
-            print("loss", loss)
+            loss = self.get_policy_loss(states, actions, reward_arr)
 
             self.actor.optimizer.zero_grad()
             self.critic.optimizer.zero_grad()
 
             loss.backward()
+            
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.clip)
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.clip)
 
             self.actor.optimizer.step()
             self.critic.optimizer.step()
