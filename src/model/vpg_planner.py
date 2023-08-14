@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from model.ppo_planner import PlannerCritic
 from memory.planner_memory import PlannerMemory
+from model.vpg_agent_approximated import VPG_Approximated
 
 class VPGActor(nn.Module):
     def __init__(self, input_dims, n_agents, lr):
@@ -36,7 +37,10 @@ class Planner:
         training_frequency=256,
         t_learning_starts=0,
         anneal_lr=False,
-        clip=5
+        clip=5,
+        simulation_history_length=100,
+        simulated_agent_lr=0.01,
+        full_observability=False
     ):
         self.input_dims = input_dims
         self.device = device
@@ -56,12 +60,20 @@ class Planner:
         self.actor = VPGActor(input_dims, n_agents, lr)
         self.critic = PlannerCritic(input_dims, n_agents, lr)
 
+        self.simulation_history_length = simulation_history_length
+        self.simulated_agent_lr = simulated_agent_lr
+
+        self.simulated_agents = [VPG_Approximated(self.simulated_agent_lr, self.simulation_history_length) for _ in range(n_agents)]
+        print("simulated agents", self.simulated_agents)
+
         self.memory = PlannerMemory(input_dims, self.memory_size, self.n_agents)
 
         self.actor.to(self.device)
         self.critic.to(self.device)
 
         self.clip = clip
+
+        self.full_observability = full_observability
 
     def remember(self, step, i, action, obs, next_obs, reward, agent_state, meta):
         obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
@@ -114,7 +126,7 @@ class Planner:
         return -torch.sum(torch.log(pi_p) * advantages)
 
     
-    def get_policy_loss_predictive(self, states, actions, rewards, agent_lrs, agents, agent_state):
+    def get_policy_loss_predictive_exact(self, states, actions, rewards, agents, agent_state):
         agent_0 = agents[0][1]
         agent_1 = agents[1][1]
 
@@ -134,22 +146,33 @@ class Planner:
             torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), self.clip)
             g_log_pi = [param.grad.detach() for _, param in agent.actor.named_parameters()][0]
 
-            # treat the rewards as they are (do not calculate advantages? do not even sum?)
+            # planner actions
             actions = self.actor(states)
             g_Vp = g_log_pi * actions[0][i]
 
+            # env rewards
             g_V = g_log_pi * torch.sum(rewards[0])
             
             # loss per agent
-            loss = -agent_lrs[i] * g_Vp * g_V
+            loss = -agent.lr * g_Vp * g_V
 
             total_loss += loss
             # print(f"loss for agent {i}", loss, "total loss", total_loss)
 
         return total_loss
 
+    def get_policy_loss_predictive_estimated(self, states, actions, rewards, simulated_agents, agent_state):
+        # update thetas for approximated agents
+        for i, agent in enumerate(simulated_agents):
+            agent.update_theta(states[0][i])
 
-    def learn(self, step, n_steps, agent_1_lr, agent_2_lr, agents):
+        agents_approximated = [(self.agent_names[0], simulated_agents[0]), (self.agent_names[1], simulated_agents[1])]
+
+        # calculate loss for approximated agents (with updated thetas)
+        return self.get_policy_loss_predictive_exact(states, actions, rewards, agents_approximated, agent_state)
+
+
+    def learn(self, step, n_steps, agents):
         for epoch in range(self.n_epochs):
             (
                 state_arr,
@@ -162,7 +185,10 @@ class Planner:
             agent_state = torch.Tensor(agent_state).to(self.device)
             actions = torch.Tensor(action_arr).to(self.device)
 
-            loss = self.get_policy_loss_predictive(states, actions, reward_arr, [agent_1_lr, agent_2_lr], agents, agent_state)
+            if self.full_observability:
+                loss = self.get_policy_loss_predictive_exact(states, actions, reward_arr, agents, agent_state)
+            else:
+                loss = self.get_policy_loss_predictive_estimated(states, actions, reward_arr, self.simulated_agents, agent_state)
 
             self.actor.optimizer.zero_grad()
             self.critic.optimizer.zero_grad()

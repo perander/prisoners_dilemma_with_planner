@@ -44,7 +44,10 @@
         "training_frequency": 2,
         "max_reward": 5,
         "anneal_lr": false,
-        "clip": 5
+        "clip": 5,
+        "simulation_history_length": 25,
+        "simulated_agent_lr": 0.02,
+        "full_observability": false
     },
     "ppo_planner": {
         "epochs": 2,

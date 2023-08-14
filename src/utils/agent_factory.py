@@ -66,7 +66,10 @@ def create_agent(name, env, device):
             training_frequency=params["training_frequency"],
             t_learning_starts=params["t_learning_starts"],
             anneal_lr=params["anneal_lr"],
-            clip=params["clip"]
+            clip=params["clip"],
+            simulation_history_length=params["simulation_history_length"],
+            simulated_agent_lr=params["simulated_agent_lr"],
+            full_observability=params["full_observability"]
         )
     elif name == "ppo_planner":
         params = hyperparameters["ppo_planner"]

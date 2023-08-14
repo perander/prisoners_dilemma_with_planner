@@ -30,7 +30,7 @@ if __name__ == "__main__":
     # hyperparameters
     planner_alg = 'vpg_planner'  # 'ppo_planner', 'q_planner'
     epochs = 1
-    episodes = 20000
+    episodes = 10000  #5
     n_steps = 1
     max_cycles = 2
     use_planner = True
@@ -97,6 +97,7 @@ if __name__ == "__main__":
             # agents learn
             for i, (name, agent) in enumerate(agents):
                 if total_steps > agent.t_learning_starts and total_steps % agent.training_frequency == 0:
+                    # print(f"agent {i} learns")
                     loss = agent.learn(total_steps, n_steps)
 
                     # log loss
@@ -124,8 +125,9 @@ if __name__ == "__main__":
 
             # planner learns
             if total_steps > planner.t_learning_starts and total_steps % planner.training_frequency == 0:
+                # print("planner learns")
                 if planner_alg == 'ppo_planner' or planner_alg == 'vpg_planner':
-                    planner_loss = planner.learn(total_steps, n_steps, agents[0][1].lr, agents[1][1].lr, agents)
+                    planner_loss = planner.learn(total_steps, n_steps, agents)
                 
                     # log loss
                     writer.add_scalar(f"loss planner", planner_loss, total_steps)
