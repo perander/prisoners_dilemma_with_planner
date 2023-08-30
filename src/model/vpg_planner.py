@@ -6,11 +6,12 @@ from memory.planner_memory import PlannerMemory
 from model.vpg_agent_approximated import VPG_Approximated
 
 class VPGActor(nn.Module):
-    def __init__(self, input_dims, n_agents, lr):
+    def __init__(self, input_dims, n_agents, lr, max_reward):
         super(VPGActor, self).__init__()
 
         self.input_dims = input_dims
         self.output_dims = n_agents
+        self.max_reward = max_reward
 
         self.actor = nn.Sequential(
             nn.Linear(self.input_dims, self.output_dims),
@@ -20,7 +21,7 @@ class VPGActor(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
     def forward(self, x):
-        return self.actor(x.float())
+        return self.max_reward * self.actor(x.float())
 
 
 class Planner:
@@ -43,6 +44,7 @@ class Planner:
         full_observability=False
     ):
         self.input_dims = input_dims
+        # print("input dims", self.input_dims)
         self.device = device
         
         self.gamma = gamma
@@ -56,17 +58,18 @@ class Planner:
         self.agent_names = agent_names
 
         self.max_reward = max_reward
+        self.input_dims = n_agents
 
-        self.actor = VPGActor(input_dims, n_agents, lr)
-        self.critic = PlannerCritic(input_dims, n_agents, lr)
+        self.actor = VPGActor(self.input_dims, n_agents, lr, self.max_reward)
+        self.critic = PlannerCritic(self.input_dims, n_agents, lr)
 
         self.simulation_history_length = simulation_history_length
         self.simulated_agent_lr = simulated_agent_lr
 
         self.simulated_agents = [VPG_Approximated(self.simulated_agent_lr, self.simulation_history_length) for _ in range(n_agents)]
-        print("simulated agents", self.simulated_agents)
+        # print("simulated agents", self.simulated_agents)
 
-        self.memory = PlannerMemory(input_dims, self.memory_size, self.n_agents)
+        self.memory = PlannerMemory(self.input_dims, self.memory_size, self.n_agents)
 
         self.actor.to(self.device)
         self.critic.to(self.device)
@@ -76,20 +79,26 @@ class Planner:
         self.full_observability = full_observability
 
     def remember(self, step, i, action, obs, next_obs, reward, agent_state, meta):
-        obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
-        reward = torch.tensor([reward[self.agent_names[0]], reward[self.agent_names[1]]])
-        agent_state = torch.tensor([agent_state[self.agent_names[0]], agent_state[self.agent_names[1]]])
+        # obs = torch.tensor([obs[self.agent_names[0]], obs[self.agent_names[1]]])
+        obs = torch.tensor([obs[self.agent_names[i]] for i in range(len(self.agent_names))])
+        # reward = torch.tensor([reward[self.agent_names[0]], reward[self.agent_names[1]]])
+        reward = torch.tensor([reward[self.agent_names[i]] for i in range(len(self.agent_names))])
+        # agent_state = torch.tensor([agent_state[self.agent_names[0]], agent_state[self.agent_names[1]]])
+        agent_state = torch.tensor([agent_state[self.agent_names[i]] for i in range(len(self.agent_names))])
 
         self.memory.store_memory(i, obs, action, reward, agent_state)
 
     
     def choose_action(self, planner_obs):
-        obs = torch.tensor([planner_obs[self.agent_names[0]], planner_obs[self.agent_names[1]]])
+
+        obs = torch.tensor([planner_obs[self.agent_names[i]] for i in range(len(self.agent_names))])
 
         obs = obs.to(self.device)
 
         actions = self.actor(obs)
         value = self.critic(obs)
+
+        return actions.squeeze(0), value
 
         return self.max_reward * actions.squeeze(0), value
 
@@ -127,12 +136,13 @@ class Planner:
 
     
     def get_policy_loss_predictive_exact(self, states, actions, rewards, agents, agent_state):
-        agent_0 = agents[0][1]
-        agent_1 = agents[1][1]
+        agents = [agents[i][1] for i in range(len(agents))]
+        # agent_0 = agents[0][1]
+        # agent_1 = agents[1][1]
 
         total_loss = 0
 
-        for i, agent in enumerate([agent_0, agent_1]):
+        for i, agent in enumerate(agents):
             # calculate agent g_log_pi
             dists, _ = agent.actor(agent_state[:,i].unsqueeze(1))
             agent_actions = states[:,i].unsqueeze(1)
@@ -166,7 +176,8 @@ class Planner:
         for i, agent in enumerate(simulated_agents):
             agent.update_theta(states[0][i])
 
-        agents_approximated = [(self.agent_names[0], simulated_agents[0]), (self.agent_names[1], simulated_agents[1])]
+        agents_approximated = [(self.agent_names[i], simulated_agents[i]) for i in range(len(self.agent_names))]
+        # agents_approximated = [(self.agent_names[0], simulated_agents[0]), (self.agent_names[1], simulated_agents[1])]
 
         # calculate loss for approximated agents (with updated thetas)
         return self.get_policy_loss_predictive_exact(states, actions, rewards, agents_approximated, agent_state)

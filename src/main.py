@@ -1,4 +1,5 @@
 import sys
+import argparse
 import logging
 from environment.prisoners_dilemma import parallel_env
 from utils.utils import get_planner_action_per_agent_actions
@@ -8,35 +9,43 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from utils.utils import reset_planner_trajectory, get_modified_rewards
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    
+if __name__ == "__main__":    
     torch.manual_seed(123)
     np.random.seed(123)
 
     torch.autograd.set_detect_anomaly(True)
+
+    logging.basicConfig(level=logging.INFO)
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-a", "--agent_algorithm", help="Agent algorithm", default="vpg")
+    parser.add_argument("-r", "--reward_structure", help="The name of the reward structure", default="pd", choices=["pd", "pd_reverse", "fully_cooperative", "pd_original"])
     
-    # agent algorithm
-    try:
-        alg = sys.argv[1]  # ppo/vpg/dummy
-    except IndexError:
-        alg = "vpg"  # by default use vanilla policy gradient
-    
+    args = parser.parse_args()
+
+    alg = args.agent_algorithm
+    reward_structure = args.reward_structure
+
     logging.debug(f"Agent algorithm: {alg}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     writer = SummaryWriter(f"src/runs/{alg}")
 
     # hyperparameters
-    planner_alg = 'vpg_planner'  # 'ppo_planner', 'q_planner'
+    planner_alg = 'vpg_planner'
     epochs = 1
-    episodes = 10000  #5
+    episodes = 5  # 5
     n_steps = 1
     max_cycles = 2
     use_planner = True
     reset_agents_every_kth_episode = 1
+    n_agents = 2
 
-    env = parallel_env(render_mode='ansi', max_cycles=max_cycles)
+    env = parallel_env(render_mode='ansi', max_cycles=max_cycles, n_agents=n_agents, reward_structure=reward_structure)
+
+    print(env.possible_agents)
 
     agents = [
         (
@@ -59,12 +68,8 @@ if __name__ == "__main__":
     agent_dists = {name: [0, 0] for name in env.possible_agents}
     planner_next_obs = {name: [0,0] for name in env.possible_agents}
 
+    obs = env.reset()
     for episode in range(episodes):
-        # if episode % reset_agents_every_kth_episode == 0:
-        #     for _, agent in agents:
-        #         agent.reset()
-
-        obs = env.reset()
 
         planner_trajectory = reset_planner_trajectory()
         actions = {}
@@ -94,6 +99,8 @@ if __name__ == "__main__":
             # calculate total reward for agents
             modified_rewards = get_modified_rewards(rewards, planner_action, env.possible_agents, use_planner)
 
+            logging.debug(f"obs: {obs}, actions: {actions}, rewards: {modified_rewards}, next_obs: {next_obs}")
+
             # agents learn
             for i, (name, agent) in enumerate(agents):
                 if total_steps > agent.t_learning_starts and total_steps % agent.training_frequency == 0:
@@ -113,15 +120,33 @@ if __name__ == "__main__":
                     "modified": cum_modified_rewards[name],
                     "additional": cum_additional_rewards[name]
                 }, total_steps)
+                
+                writer.add_scalars(f"avg reward per episode {name}", {
+                    "env": cum_rewards[name] / (episode + 1),
+                    "modified": cum_modified_rewards[name] / (episode + 1),
+                    "additional": cum_additional_rewards[name] / (episode + 1)
+                }, total_steps)
 
             # agents store trajectory
-            for i, (name, agent) in enumerate(agents):
-                agent.remember(
-                    total_steps % agent.training_frequency,
-                    obs[name],
-                    actions[name],
-                    modified_rewards[name]
-                )
+            if alg == 'vpg':
+                for i, (name, agent) in enumerate(agents):
+                    agent.remember(
+                        total_steps % agent.training_frequency,
+                        obs[name],
+                        actions[name],
+                        modified_rewards[name]
+                    )
+            elif alg == 'ppo':
+                for i, (name, agent) in enumerate(agents):
+                    agent.remember(
+                        total_steps % agent.training_frequency,
+                        obs[name],
+                        next_obs[name],
+                        actions[name],
+                        modified_rewards[name],
+                        probs[name],
+                        values[name]
+                    )
 
             # planner learns
             if total_steps > planner.t_learning_starts and total_steps % planner.training_frequency == 0:
@@ -144,8 +169,7 @@ if __name__ == "__main__":
             
             # log p(cooperate)
             writer.add_scalars(f"p(cooperate) ", {
-                f"{env.possible_agents[0]}": agent_dists[env.possible_agents[0]][0],
-                f"{env.possible_agents[1]}": agent_dists[env.possible_agents[1]][0],
+                f"{env.possible_agents[i]}": agent_dists[env.possible_agents[i]][0] for i in range(len(env.possible_agents))
             }, total_steps)
 
             # log thetas
@@ -157,25 +181,26 @@ if __name__ == "__main__":
             # log action frequencies
             if total_steps % reset_agents_every_kth_episode == 0:
 
-                avg_planner_action_per_agent_actions_0, avg_planner_action_per_agent_actions_1 = get_planner_action_per_agent_actions(planner_alg, planner)
+                avg_planner_action_per_agent_actions = get_planner_action_per_agent_actions(planner_alg, planner, n_agents)
 
                 writer.add_scalars(f"planner rewards for agent actions 0", {
-                    "c, c": avg_planner_action_per_agent_actions_0[0],
-                    "c, d": avg_planner_action_per_agent_actions_0[1],
-                    "d, c": avg_planner_action_per_agent_actions_0[2],
-                    "d, d": avg_planner_action_per_agent_actions_0[3]
+                    "c, c": avg_planner_action_per_agent_actions[0][0],
+                    "c, d": avg_planner_action_per_agent_actions[0][1],
+                    "d, c": avg_planner_action_per_agent_actions[0][2],
+                    "d, d": avg_planner_action_per_agent_actions[0][len(avg_planner_action_per_agent_actions[0])-1]
                 }, total_steps)
 
                 writer.add_scalars(f"planner rewards for agent actions 1", {
-                    "c, c": avg_planner_action_per_agent_actions_1[0],
-                    "c, d": avg_planner_action_per_agent_actions_1[1],
-                    "d, c": avg_planner_action_per_agent_actions_1[2],
-                    "d, d": avg_planner_action_per_agent_actions_1[3]
+                    "c, c": avg_planner_action_per_agent_actions[1][0],
+                    "c, d": avg_planner_action_per_agent_actions[1][1],
+                    "d, c": avg_planner_action_per_agent_actions[1][2],
+                    "d, d": avg_planner_action_per_agent_actions[1][len(avg_planner_action_per_agent_actions[0])-1]
                 }, total_steps)
 
             total_steps += 1
 
-        logging.info(f"episode {episode}, p(c): ({agent_dists[env.possible_agents[0]][0]:.2f},{agent_dists[env.possible_agents[1]][0]:.2f}) ")
+        # log p(cooperate)
+        logging.info(f"episode {episode}, p(c): {[round(agent_dists[env.possible_agents[i]][0].item(), 2) for i in range(len(env.possible_agents))]}")
 
     env.close()
     writer.close()
