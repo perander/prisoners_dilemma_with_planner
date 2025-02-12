@@ -1,0 +1,321 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.distributions.categorical import Categorical
+from memory.ppo_memory import PPOMemory
+from memory.pongmemory import PongMemory
+
+# class PongNet(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.conv1 = nn.Conv2d(3, 6, 5)
+#         self.pool = nn.MaxPool2d(2, 2)
+#         self.conv2 = nn.Conv2d(6, 16, 5)
+#         self.fc1 = nn.Linear(16 * 5 * 5, 120)
+#         self.fc2 = nn.Linear(120, 84)
+#         self.fc3 = nn.Linear(84, 10)
+
+#     def forward(self, x):
+#         x = self.pool(F.relu(self.conv1(x)))
+#         x = self.pool(F.relu(self.conv2(x)))
+#         x = torch.flatten(x, 1) # flatten all dimensions except batch
+#         x = F.relu(self.fc1(x))
+#         x = F.relu(self.fc2(x))
+#         x = self.fc3(x)
+#         return x
+
+
+class ActorNetwork(nn.Module):
+    def __init__(self, n_actions, input_dims, lr):
+        super().__init__()
+        self.input_dims = input_dims 
+        # 1 because one agent only has one number as observation
+        self.output_dims = n_actions # 3 because there are 3 possible actions for one agent
+
+
+        # print("starting actor")
+        # self.features = nn.Sequential(
+        #     nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1),
+        #     nn.ReLU(),
+        #     nn.MaxPool2d(kernel_size=2, stride=2),
+        # )
+
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(16 * 240 * 140, 64),
+        #     nn.ReLU(),
+        #     nn.Linear(64, 32),
+        #     nn.ReLU(),
+        #     nn.Linear(32, self.output_dims),
+        #     nn.Softmax(dim=-1),
+        # )
+
+
+        self.actor = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Flatten(),
+            nn.Linear(8 * 240 * 140, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, self.output_dims),
+            nn.Softmax(dim=-1),
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
+
+    def forward(self, x):
+        # dist = self.actor(x / self.output_dims)
+        # print("forward got", x.shape, x.float().dtype)
+        # y = self.features(x.float())
+        # print("from features", y.shape)
+        # y = torch.flatten(y, 1)
+        # print("from flatten", y.shape)
+        # y = self.classifier(y)
+        # print("from classifier", y.shape, y)
+
+        dist = self.actor(x.float())
+        print("dist", dist)
+        dist = Categorical(dist)
+
+        return dist
+
+
+class CriticNetwork(nn.Module):
+    def __init__(self, n_actions, input_dims, lr):
+        super(CriticNetwork, self).__init__()
+
+        self.input_dims = input_dims
+        self.output_dims = n_actions
+
+
+        self.critic = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Flatten(),
+            nn.Linear(16 * 240 * 140, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+        )
+
+        self.og_critic = nn.Sequential(
+            nn.Linear(self.input_dims, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
+
+    def forward(self, x):
+        # print("critic got", x.float().shape)
+        value = self.critic(x.float()) 
+        # print("value from critic", value)
+        return value
+        return self.critic(x / self.output_dims)
+
+
+class PongAgent:
+    def __init__(
+        self,
+        n_actions,
+        input_dims,
+        device,
+        gamma=0.99,
+        lr=0.0003,
+        gae_lambda=0.95,
+        policy_clip=0.2,
+        batch_size=64,
+        n_epochs=10,
+        memory_size=1000000,
+        ent_coef=0.01,
+        vf_coef=0.5,
+        training_frequency=256,
+        t_learning_starts=0,
+        anneal_lr=False
+    ):
+        self.gamma = gamma
+        self.lr = lr
+        self.policy_clip = policy_clip
+        self.n_epochs = n_epochs
+        self.gae_lambda = gae_lambda
+        self.ent_coef = ent_coef
+        self.vf_coef = vf_coef
+        self.n_actions = n_actions
+
+        self.training_frequency = training_frequency
+        self.t_learning_starts = t_learning_starts
+
+        self.actor = ActorNetwork(n_actions, input_dims, lr)
+        self.critic = CriticNetwork(n_actions, input_dims, lr)
+        self.batch_size = batch_size
+        self.memory_size = memory_size
+        self.memory = PongMemory(input_dims, self.batch_size, self.memory_size)
+
+        self.device = device
+        self.actor.to(self.device)
+        self.critic.to(self.device)
+        self.anneal_lr = anneal_lr
+
+    def remember(self, i, obs, next_obs, action, reward, prob, val):
+        obs = obs.transpose()
+        next_obs = next_obs.transpose()
+        # print(f"kierros {i}, action {action}, reward {reward}, prob {prob}, value {val}")
+        # print("obs", torch.tensor([obs]).shape, torch.tensor(obs).shape, torch.tensor(obs).unsqueeze(0).shape)
+        obs = torch.tensor(obs)
+        obs = obs.to(self.device)
+        next_obs = torch.tensor(next_obs)
+        next_obs = next_obs.to(self.device)
+        action = torch.tensor([action])
+        reward = torch.tensor([reward])
+        prob = torch.tensor([prob])
+        val = torch.tensor([val])
+
+        self.memory.store_memory(i, obs, next_obs, action, reward, prob, val)
+
+    def choose_action(self, obs):
+        obs = obs.transpose()
+        obs = torch.tensor(obs)
+        obs = obs.unsqueeze(0)
+        # print("obs dims", obs.shape)
+        # print("obs", obs)
+        obs = obs.to(self.device)
+
+        dist = self.actor(obs)
+        # print("found dist", dist)
+        value = self.critic(obs)
+
+        action = dist.sample()
+        # print("sampled action", action)
+        # print(list(dist.probs))
+        probs = torch.squeeze(dist.log_prob(action)).item()
+        action = torch.squeeze(action).item()
+        value = torch.squeeze(value).item()
+
+        return action, probs, dist.entropy(), value, dist.probs
+
+    def compute_gae(self, rewards, values, next_values, gamma, gae_lambda):
+        num_steps = len(rewards)
+        advantages = np.zeros(num_steps)
+        last_gae = 0
+
+        for t in reversed(range(num_steps)):
+            if t == num_steps - 1:
+                delta = rewards[t] + gamma * next_values[t] - values[t]
+            else:
+                delta = rewards[t] + gamma * values[t + 1] - values[t]
+
+            last_gae = delta + gamma * gae_lambda * last_gae
+            advantages[t] = last_gae
+
+        return advantages
+
+    def normalize_advantages(self, advantages):
+        return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    def get_policy_loss(self, states, actions, old_probs, advantages, policy_clip):
+        dist = self.actor(states)
+        new_probs = dist.log_prob(actions)
+        prob_ratio = (new_probs - old_probs).exp()
+
+        weighted_probs = -advantages * prob_ratio
+        weighted_clipped_probs = -advantages * torch.clamp(
+            prob_ratio, 1 - policy_clip, 1 + policy_clip
+        )
+        policy_loss = torch.max(weighted_probs, weighted_clipped_probs).mean()
+
+        return policy_loss
+
+    def get_value_loss(self, states, advantages, values):
+        returns = advantages + values
+        critic_value = self.critic(states)
+        critic_value = torch.squeeze(critic_value)
+
+        critic_loss = ((returns - critic_value) ** 2).mean()
+
+        return critic_loss
+    
+
+    def get_annealed_lr(self, lr, step, n_steps):
+        frac = 1.0 - (step - 1.0) / n_steps
+        new_lr = frac * lr
+
+        self.actor.optimizer.param_groups[0]["lr"] = new_lr
+        self.critic.optimizer.param_groups[0]["lr"] = new_lr
+
+
+    def learn(self, step, n_steps):
+        for epoch in range(self.n_epochs):
+            (
+                state_arr,
+                next_state_arr,
+                action_arr,
+                old_prob_arr,
+                vals_arr,
+                reward_arr,
+                # dones_arr, TODO add
+                batches,
+            ) = self.memory.generate_batches(self.device)
+
+
+            next_states = torch.Tensor(next_state_arr).to(self.device)
+            next_values = self.critic(next_states)
+
+            advantages_arr = self.compute_gae(
+                reward_arr, vals_arr, next_values, self.gamma, self.gae_lambda
+            )
+
+            if self.anneal_lr:
+                self.get_annealed_lr(self.lr, step, n_steps)
+
+            # For each batch, update actor and critic
+            for batch in batches:
+                states = torch.Tensor(state_arr[batch]).to(self.device)
+                old_probs = torch.Tensor(old_prob_arr[batch]).to(self.device)
+                actions = torch.Tensor(action_arr[batch]).to(self.device)
+                values = torch.Tensor(vals_arr[batch]).to(self.device)
+                advantages = torch.Tensor(advantages_arr[batch]).to(self.device)
+
+                advantages = self.normalize_advantages(advantages)
+
+                # compute losses
+                policy_loss = self.get_policy_loss(
+                    states, actions, old_probs, advantages, self.policy_clip
+                )
+
+                value_loss = self.get_value_loss(states, advantages, values)
+
+                dist = self.actor(states)
+                entropy = dist.entropy()
+                entropy_loss = entropy.mean()
+
+                total_loss = (
+                    policy_loss
+                    - self.ent_coef * entropy_loss
+                    + value_loss * self.vf_coef
+                )
+
+                # step
+                self.actor.optimizer.zero_grad()
+                self.critic.optimizer.zero_grad()
+                total_loss.backward()
+
+                for param in self.actor.parameters():
+                    param.grad.data.clamp_(-1, 1)
+                for param in self.critic.parameters():
+                    # print("param", param.grad)
+                    if param.grad is not None:
+                        param.grad.data.clamp_(-1, 1)
+
+                self.actor.optimizer.step()
+                self.critic.optimizer.step()
+
+        self.memory.clear_memory()
+        return total_loss.item()

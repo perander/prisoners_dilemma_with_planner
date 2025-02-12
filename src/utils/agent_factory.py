@@ -6,6 +6,7 @@ from model.ppo_planner import Planner
 from model.q_planner import QLearningPlanner
 from model.vpg_planner import Planner as VPGPlanner
 from utils.dummy_agent import DummyAgent
+from model.pongmodel import PongAgent
 
 def create_agent(name, env, device):
     with open("hyperparameters.json", "r") as config_file:
@@ -43,6 +44,25 @@ def create_agent(name, env, device):
             t_learning_starts=params["t_learning_starts"],
             anneal_lr=params["anneal_lr"]
         )
+    elif name == 'pong_ppo':
+        params = hyperparameters["pong_ppo"]
+        return PongAgent(
+            n_actions=env.action_space(env.possible_agents[0]).n,
+            input_dims=1,
+            device=device,
+            gamma=params["gamma"],
+            lr=params["lr"],
+            gae_lambda=params["gae_lambda"],
+            policy_clip=params["policy_clip"],
+            batch_size=params["batch_size"],
+            n_epochs=params["epochs"],
+            memory_size=params["training_frequency"],
+            ent_coef=params["ent_coef"],
+            vf_coef=params["vf_coef"],
+            training_frequency=params["training_frequency"],
+            t_learning_starts=params["t_learning_starts"],
+            anneal_lr=params["anneal_lr"]
+        )
     elif name == "dummy":
         params = hyperparameters["dummy"]
         
@@ -55,6 +75,7 @@ def create_agent(name, env, device):
         n_agents = len(env.possible_agents)
 
         return VPGPlanner(
+            # n_actions_per_agent=params["n_actions_per_agent"],
             n_agents=n_agents,
             agent_names=env.possible_agents,
             max_reward=params["max_reward"],
