@@ -1,4 +1,8 @@
 import numpy as np
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('matplotlib.font_manager').disabled = True
 
 class PongMemory(object):
     def __init__(self, obs_dim, batch_size, capacity):
@@ -24,7 +28,11 @@ class PongMemory(object):
         np.random.shuffle(indices)
         batches = [indices[i : i + self.batch_size] for i in batch_starts]
 
-        print(self.actions)
+        logging.info(f"generating batches, actions: \n{self.actions}")
+        logging.info(f"generating batches, probs: \n{self.probs}")
+        logging.info(f"generating batches, rewards: \n{self.rewards}")
+
+
         return (
             self.obs,
             self.next_obs,

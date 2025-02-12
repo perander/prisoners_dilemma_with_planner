@@ -7,6 +7,12 @@ from torch.distributions.categorical import Categorical
 from memory.ppo_memory import PPOMemory
 from memory.pongmemory import PongMemory
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('matplotlib.font_manager').disabled = True
+
+
 # class PongNet(nn.Module):
 #     def __init__(self):
 #         super().__init__()
@@ -78,8 +84,13 @@ class ActorNetwork(nn.Module):
         # print("from classifier", y.shape, y)
 
         dist = self.actor(x.float())
-        print("dist", dist)
+        logging.debug(f"[pongmodel forward] dist {dist}")
+        logging.info("\n")
+        for label, p in enumerate(dist[0]):
+            logging.info(f'{label:2}: {100*p:5.2f}%')
         dist = Categorical(dist)
+        logging.debug(f"[pongmodel forward] categorical dist {dist}")
+
 
         return dist
 
@@ -118,6 +129,7 @@ class CriticNetwork(nn.Module):
         # print("critic got", x.float().shape)
         value = self.critic(x.float()) 
         # print("value from critic", value)
+        logging.debug(f"pongmodel critic forward: value {value}")
         return value
         return self.critic(x / self.output_dims)
 
@@ -252,6 +264,8 @@ class PongAgent:
 
 
     def learn(self, step, n_steps):
+        logging.debug("pongmodel learn")
+
         for epoch in range(self.n_epochs):
             (
                 state_arr,

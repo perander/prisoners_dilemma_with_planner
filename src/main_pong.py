@@ -9,6 +9,11 @@ import matplotlib.pyplot as plt
 
 # https://github.com/Farama-Foundation/PettingZoo/blob/master/pettingzoo/butterfly/cooperative_pong/cooperative_pong.py
 
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger('matplotlib.font_manager').disabled = True
+
 torch.manual_seed(123)
 np.random.seed(123)
 
@@ -16,7 +21,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 env = cooperative_pong_v5.parallel_env(render_mode="rgb", cake_paddle=False, off_screen_penalty=-10)
-# env = BaseParallelWrapper(env)
+env = BaseParallelWrapper(env)
 
 # print("Resetting environment")
 observations, infos = env.reset()
@@ -27,7 +32,7 @@ kierroksia = 0
 kierrosluku_total = 0
 episodes = 0
 max_episodes = 5
-max_kierrosluku = 10
+max_kierrosluku = 50
 kierrosluvut = np.zeros(max_episodes)
 print(kierrosluvut)
 
@@ -77,7 +82,9 @@ while env.agents:
     
 
     observations, rewards, terminations, truncations, infos = env.step(actions)
-    # print(actions)
+
+    logging.debug(f"actions {actions}")
+    
     # print(rewards, terminations, truncations)
     # print(observations['paddle_0'].shape)
     # print(observations['paddle_0'].transpose().shape)
@@ -86,9 +93,9 @@ while env.agents:
     if kierroksia > 1:
         for i, (name, agent) in enumerate(agents):
             if kierrosluku_total > agent.t_learning_starts and kierrosluku_total % agent.training_frequency == 0:
-                print(name, "tries to learn", kierrosluku_total, episodes)
+                logging.debug(f"{name} tries to learn, { kierrosluku_total}, {episodes}")
                 loss = agent.learn(kierrosluku_total, kierroksia)
-                print("loss", loss)
+                logging.debug(f"loss {loss}")
 
     # agents store trajectory
     if kierroksia > 1:
@@ -112,14 +119,14 @@ while env.agents:
     if (terminations['paddle_0'] or terminations['paddle_1']) or kierroksia == max_kierrosluku:
         observations, infos = env.reset()
         kierrosluvut[episodes] = kierroksia
-        print(kierrosluvut)
+        logging.info(f"kierrosluvut {kierrosluvut}")
         kierroksia = 0
         episodes += 1
 
     if episodes == max_episodes:
         break
 
-print("kierrosluvut", kierrosluvut)
+logging.info(f"kierrosluvut {kierrosluvut}")
 plt.plot(kierrosluvut)
 plt.savefig('kierrosluvut.jpg')
 
